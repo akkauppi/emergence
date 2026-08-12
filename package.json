@@ -1,0 +1,16 @@
+{
+  "name": "emergence-lab",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A classroom laboratory for exploring emergent spatial behaviour.",
+  "scripts": {
+    "dev": "node scripts/dev-server.mjs",
+    "build": "node scripts/build.mjs",
+    "test": "node --test",
+    "check": "npm run test && npm run build"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="A classroom laboratory for exploring how simple individual rules produce collective spatial form."
+    />
+    <meta name="theme-color" content="#f4f0e8" />
+    <title>Emergence Lab</title>
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body data-mobile-tab="playground">
+    <header class="topbar">
+      <a class="brand" href="./" aria-label="Emergence Lab home">
+        <span class="brand-mark" aria-hidden="true">
+          <i></i><i></i><i></i><i></i>
+        </span>
+        <span>
+          <strong>Emergence Lab</strong>
+          <small>City morphology playground</small>
+        </span>
+      </a>
+
+      <div class="scenario-picker">
+        <label for="scenario-select">Experiment</label>
+        <select id="scenario-select"></select>
+      </div>
+
+      <div class="header-actions">
+        <button class="button button-quiet" id="roadmap-button" type="button">
+          Roadmap
+        </button>
+        <button class="button button-quiet" id="presentation-button" type="button">
+          <span aria-hidden="true">↗</span> Present
+        </button>
+      </div>
+    </header>
+
+    <nav class="mobile-tabs" aria-label="Workspace view">
+      <button class="mobile-tab is-active" data-tab="playground" type="button">Playground</button>
+      <button class="mobile-tab" data-tab="code" type="button">Code</button>
+    </nav>
+
+    <main class="workspace">
+      <section class="simulator-card" aria-labelledby="playground-title">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Movement laboratory / 01</p>
+            <h1 id="playground-title">Observe the whole, inspect a rule</h1>
+          </div>
+          <div class="seed-control" title="Resetting with the same seed reproduces the same world">
+            <span>Seed</span>
+            <strong id="seed-value">2026</strong>
+            <button id="new-seed-button" type="button" aria-label="Use next random seed">New</button>
+          </div>
+        </div>
+
+        <div class="canvas-shell" id="canvas-shell">
+          <canvas id="world-canvas" aria-label="Agent simulation playground"></canvas>
+          <div class="canvas-topline" aria-hidden="true">
+            <span class="status-pill" id="canvas-status"><i></i> Paused</span>
+            <span class="tick-pill">tick <strong id="tick-value">0</strong></span>
+          </div>
+          <p class="canvas-instruction" id="canvas-instruction">
+            Select an agent to reveal the people shaping its movement.
+          </p>
+          <div class="canvas-legend" id="canvas-legend" aria-hidden="true">
+            <span><i class="legend-self"></i> selected</span>
+            <span><i class="legend-a"></i> person A</span>
+            <span><i class="legend-b"></i> person B</span>
+          </div>
+        </div>
+
+        <p class="sr-only" id="canvas-description" aria-live="polite">
+          Simulation paused at tick 0.
+        </p>
+
+        <div class="metrics-strip" aria-label="Live simulation measurements">
+          <article class="metric">
+            <span>Group spread</span>
+            <strong id="spread-value">—</strong>
+            <small>radius from centre</small>
+          </article>
+          <article class="metric">
+            <span>Nearest neighbour</span>
+            <strong id="nearest-value">—</strong>
+            <small>mean distance</small>
+          </article>
+          <article class="metric metric-with-chart">
+            <div>
+              <span>Rule match</span>
+              <strong id="match-value">—</strong>
+              <small id="match-label">relationship satisfied</small>
+            </div>
+            <svg id="metric-chart" viewBox="0 0 132 42" role="img" aria-label="Recent group spread">
+              <path class="chart-baseline" d="M1 40.5 H131"></path>
+              <polyline id="metric-line" points=""></polyline>
+            </svg>
+          </article>
+        </div>
+
+        <div class="control-deck">
+          <div class="transport-controls" aria-label="Simulation playback">
+            <button class="button button-primary" id="play-button" type="button">
+              <span id="play-icon" aria-hidden="true">▶</span>
+              <span id="play-label">Run</span>
+            </button>
+            <button class="icon-button" id="step-button" type="button" aria-label="Advance one step" title="Advance one step">›|</button>
+            <button class="icon-button" id="reset-button" type="button" aria-label="Reset simulation" title="Reset with the same seed">↺</button>
+          </div>
+
+          <div class="control-field">
+            <label for="speed-select">Tempo</label>
+            <select id="speed-select">
+              <option value="0.25">¼×</option>
+              <option value="0.5">½×</option>
+              <option value="1" selected>1×</option>
+              <option value="2">2×</option>
+              <option value="4">4×</option>
+            </select>
+          </div>
+
+          <div class="control-field population-field">
+            <label for="population-input">People <output id="population-value">72</output></label>
+            <input id="population-input" type="range" min="12" max="180" step="6" value="72" />
+          </div>
+
+          <label class="toggle-control">
+            <input id="trails-toggle" type="checkbox" checked />
+            <span aria-hidden="true"></span>
+            Trails
+          </label>
+          <label class="toggle-control">
+            <input id="relations-toggle" type="checkbox" checked />
+            <span aria-hidden="true"></span>
+            Relations
+          </label>
+        </div>
+
+        <div class="parameter-deck" id="parameter-controls" aria-label="Rule parameters"></div>
+      </section>
+
+      <aside class="editor-card" aria-labelledby="lesson-title">
+        <section class="lesson-card">
+          <div class="lesson-number" aria-hidden="true">01</div>
+          <div>
+            <p class="eyebrow" id="lesson-kicker">Convergent behaviour</p>
+            <h2 id="lesson-title">Stand between two people</h2>
+            <p id="lesson-description"></p>
+          </div>
+        </section>
+
+        <section class="rule-explainer" aria-label="Rule in plain language">
+          <p class="eyebrow">Every person repeats</p>
+          <ol id="rule-steps"></ol>
+          <p class="question-prompt" id="question-prompt"></p>
+        </section>
+
+        <section class="editor-section">
+          <div class="editor-toolbar">
+            <div>
+              <span class="eyebrow">Agent program</span>
+              <span class="language-pill">JavaScript</span>
+            </div>
+            <span class="code-state" id="code-state">Example loaded</span>
+          </div>
+          <div class="code-editor-wrap">
+            <div class="line-numbers" id="line-numbers" aria-hidden="true"></div>
+            <textarea
+              id="code-editor"
+              aria-label="Editable agent behaviour program"
+              autocomplete="off"
+              autocapitalize="off"
+              spellcheck="false"
+            ></textarea>
+          </div>
+          <div class="diagnostics" id="diagnostics" role="alert" hidden></div>
+          <div class="editor-actions">
+            <button class="button button-accent" id="apply-button" type="button">
+              Apply &amp; reset
+              <kbd>⌘↵</kbd>
+            </button>
+            <button class="button button-quiet" id="restore-button" type="button">Restore example</button>
+          </div>
+        </section>
+
+        <details class="api-reference">
+          <summary>
+            <span><i aria-hidden="true">{ }</i> Rule API</span>
+            <span aria-hidden="true">＋</span>
+          </summary>
+          <div class="api-content">
+            <p><code>self</code> is the current person. <code>chosen</code> contains their two stable references.</p>
+            <dl>
+              <div><dt><code>vec.seek(self, target, strength)</code></dt><dd>steer toward a point</dd></div>
+              <div><dt><code>vec.midpoint(a, b)</code></dt><dd>point halfway between</dd></div>
+              <div><dt><code>random(key)</code></dt><dd>seeded value from 0 to 1</dd></div>
+            </dl>
+            <p class="trust-note">Prototype note: run only code you trust. The worker protects the interface from accidental loops, but it is not a security sandbox.</p>
+          </div>
+        </details>
+      </aside>
+    </main>
+
+    <dialog id="roadmap-dialog" class="roadmap-dialog">
+      <form method="dialog" class="dialog-frame">
+        <header>
+          <div>
+            <p class="eyebrow">From movement to morphology</p>
+            <h2>A four-stage teaching toolbox</h2>
+          </div>
+          <button class="dialog-close" value="close" aria-label="Close roadmap">×</button>
+        </header>
+        <div class="roadmap-intro">
+          <p>Each stage adds one persistent kind of consequence while preserving the same lesson loop:</p>
+          <strong>Predict → run → measure → change one rule → rerun → explain.</strong>
+        </div>
+        <ol class="roadmap-list">
+          <li class="is-current">
+            <span>01</span>
+            <div><strong>Movement laboratory</strong><p>Social references, steering rules, seeded comparison, trails and spatial metrics.</p></div>
+            <em>Now</em>
+          </li>
+          <li>
+            <span>02</span>
+            <div><strong>Interaction laboratory</strong><p>Destinations, obstacles, fields, desire paths and side-by-side experiments.</p></div>
+            <em>Next</em>
+          </li>
+          <li>
+            <span>03</span>
+            <div><strong>Territory laboratory</strong><p>Land reservations, competing claims, parcels, access and conflict resolution.</p></div>
+            <em>Later</em>
+          </li>
+          <li>
+            <span>04</span>
+            <div><strong>Urban growth laboratory</strong><p>Paths become streets; plots subdivide; gates, markets and walls shape an emergent town.</p></div>
+            <em>Capstone</em>
+          </li>
+        </ol>
+        <footer>
+          <p>The full implementation plan lives in <code>docs/PLAN.md</code>.</p>
+          <button class="button button-primary" value="close">Back to the lab</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>
