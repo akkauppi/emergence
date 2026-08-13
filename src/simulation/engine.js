@@ -1,5 +1,6 @@
 import { keyedRandom, randomInteger, stateChecksum } from "./prng.js";
 import { clampWorldPoint, equilateralApex, nearestEquilateralApex } from "./geometry.js";
+import { ScalarField } from "./scalar-field.js";
 
 const DEFAULT_WIDTH = 1_000;
 const DEFAULT_HEIGHT = 650;
@@ -26,6 +27,118 @@ function frozenVector(x, y) {
   return Object.freeze({ x, y });
 }
 
+function normalizeEnvironment(environment, worldWidth, worldHeight) {
+  if (!environment || typeof environment !== "object") return null;
+
+  const destinations = Object.freeze((Array.isArray(environment.destinations) ? environment.destinations : [])
+    .map((destination, index) => {
+      const x = Number(destination?.x ?? destination?.position?.x);
+      const y = Number(destination?.y ?? destination?.position?.y);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+      return Object.freeze({
+        id: String(destination.id ?? `destination-${index}`),
+        label: String(destination.label ?? destination.name ?? destination.id ?? `Destination ${index + 1}`),
+        x: clamp(x, 0, worldWidth),
+        y: clamp(y, 0, worldHeight),
+        radius: clamp(finiteOr(Number(destination.radius ?? destination.r), 18), 1, 200),
+      });
+    })
+    .filter(Boolean));
+
+  const obstacles = Object.freeze((Array.isArray(environment.obstacles) ? environment.obstacles : [])
+    .map((obstacle, index) => {
+      let x = Number(obstacle?.x ?? obstacle?.position?.x);
+      let y = Number(obstacle?.y ?? obstacle?.position?.y);
+      const width = Number(obstacle?.width ?? obstacle?.w ?? obstacle?.size?.width);
+      const height = Number(obstacle?.height ?? obstacle?.h ?? obstacle?.size?.height);
+      if (![x, y, width, height].every(Number.isFinite) || width <= 0 || height <= 0) return null;
+      const right = clamp(x + width, 0, worldWidth);
+      const bottom = clamp(y + height, 0, worldHeight);
+      x = clamp(x, 0, worldWidth);
+      y = clamp(y, 0, worldHeight);
+      if (right <= x || bottom <= y) return null;
+      return Object.freeze({
+        id: String(obstacle.id ?? `obstacle-${index}`),
+        label: String(obstacle.label ?? obstacle.name ?? obstacle.id ?? ""),
+        x,
+        y,
+        width: right - x,
+        height: bottom - y,
+      });
+    })
+    .filter(Boolean));
+
+  const journeyInput = environment.journeys ?? environment.journey ?? {};
+  const journeys = Object.freeze({
+    enabled: Boolean(journeyInput.enabled) && destinations.length > 1,
+    spawnAtDestinations: Boolean(journeyInput.spawnAtDestinations),
+    arrivalRadius: clamp(finiteOr(Number(journeyInput.arrivalRadius), 24), 1, 300),
+  });
+  const fieldInput = environment.field && typeof environment.field === "object"
+    ? environment.field
+    : null;
+  const field = fieldInput && fieldInput.enabled !== false
+    ? Object.freeze({
+      enabled: true,
+      cellSize: clamp(finiteOr(Number(fieldInput.cellSize), 16), 2, Math.max(worldWidth, worldHeight)),
+      deposit: clamp(finiteOr(Number(fieldInput.deposit), 1), 0, 1_000),
+      decay: clamp(finiteOr(Number(fieldInput.decay), 0), 0, 1),
+      persistence: fieldInput.persistence === undefined
+        ? null
+        : clamp(finiteOr(Number(fieldInput.persistence), 1), 0, 1),
+      diffusion: clamp(finiteOr(Number(fieldInput.diffusion), 0), 0, 1),
+    })
+    : null;
+
+  return Object.freeze({ destinations, obstacles, journeys, field });
+}
+
+function resolveCircleAgainstRectangle(position, velocity, radius, rectangle) {
+  const right = rectangle.x + rectangle.width;
+  const bottom = rectangle.y + rectangle.height;
+  const nearestX = clamp(position.x, rectangle.x, right);
+  const nearestY = clamp(position.y, rectangle.y, bottom);
+  let dx = position.x - nearestX;
+  let dy = position.y - nearestY;
+  const distanceSquared = dx * dx + dy * dy;
+  if (distanceSquared >= radius * radius) return { position, velocity, collided: false };
+
+  let normalX;
+  let normalY;
+  let penetration;
+  if (distanceSquared > EPSILON) {
+    const distance = Math.sqrt(distanceSquared);
+    normalX = dx / distance;
+    normalY = dy / distance;
+    penetration = radius - distance;
+  } else {
+    const candidates = [
+      { distance: position.x - rectangle.x, x: -1, y: 0 },
+      { distance: right - position.x, x: 1, y: 0 },
+      { distance: position.y - rectangle.y, x: 0, y: -1 },
+      { distance: bottom - position.y, x: 0, y: 1 },
+    ].sort((a, b) => a.distance - b.distance);
+    normalX = candidates[0].x;
+    normalY = candidates[0].y;
+    penetration = radius + candidates[0].distance;
+  }
+
+  const resolvedPosition = {
+    x: position.x + normalX * penetration,
+    y: position.y + normalY * penetration,
+  };
+  const normalSpeed = velocity.x * normalX + velocity.y * normalY;
+  if (normalSpeed >= 0) return { position: resolvedPosition, velocity, collided: true };
+  return {
+    position: resolvedPosition,
+    velocity: {
+      x: velocity.x - normalX * normalSpeed * 1.3,
+      y: velocity.y - normalY * normalSpeed * 1.3,
+    },
+    collided: true,
+  };
+}
+
 function chooseOther(seed, agentId, population, key, excluded = new Set()) {
   if (population <= excluded.size) return agentId;
   let candidate = randomInteger(seed, 0, population, agentId, key);
@@ -47,6 +160,7 @@ export class SimulationEngine {
     params = {},
     relationMode = "midpoint",
     ruleKey = "",
+    environment = null,
   }) {
     if (typeof behavior !== "function") throw new TypeError("A behavior function is required.");
 
@@ -59,6 +173,9 @@ export class SimulationEngine {
     this.params = { ...params };
     this.relationMode = relationMode;
     this.ruleKey = String(ruleKey);
+    this.environment = normalizeEnvironment(environment, this.width, this.height);
+    this.field = this.environment?.field ? new ScalarField(this.width, this.height, this.environment.field) : null;
+    this.trips = 0;
     this.tick = 0;
     this.lastError = null;
     this.agents = [];
@@ -68,10 +185,18 @@ export class SimulationEngine {
     this.reset();
   }
 
-  reset({ seed = this.seed, population = this.population, params = this.params } = {}) {
+  reset({
+    seed = this.seed,
+    population = this.population,
+    params = this.params,
+    environment = this.environment,
+  } = {}) {
     this.seed = Number(seed) >>> 0;
     this.population = clamp(Math.round(population), 3, 2_000);
     this.params = { ...params };
+    this.environment = normalizeEnvironment(environment, this.width, this.height);
+    this.field = this.environment?.field ? new ScalarField(this.width, this.height, this.environment.field) : null;
+    this.trips = 0;
     this.tick = 0;
     this.lastError = null;
     this.agents = this.#createAgents();
@@ -99,8 +224,20 @@ export class SimulationEngine {
     const radius = clamp(9 - Math.sqrt(this.population) * 0.16, 5.5, 7.8);
 
     return Array.from({ length: this.population }, (_, id) => {
-      const x = margin + keyedRandom(this.seed, id, "initial-x") * usableWidth;
-      const y = margin + keyedRandom(this.seed, id, "initial-y") * usableHeight;
+      const journeys = this.environment?.journeys;
+      const destinations = this.environment?.destinations || [];
+      const spawnIndex = destinations.length > 0 ? id % destinations.length : -1;
+      const spawn = journeys?.enabled && journeys.spawnAtDestinations ? destinations[spawnIndex] : null;
+      const spawnAngle = keyedRandom(this.seed, id, "spawn-angle") * Math.PI * 2;
+      const spawnRadius = spawn
+        ? Math.sqrt(keyedRandom(this.seed, id, "spawn-radius")) * Math.max(1, spawn.radius * 0.55)
+        : 0;
+      const x = spawn
+        ? clamp(spawn.x + Math.cos(spawnAngle) * spawnRadius, margin, this.width - margin)
+        : margin + keyedRandom(this.seed, id, "initial-x") * usableWidth;
+      const y = spawn
+        ? clamp(spawn.y + Math.sin(spawnAngle) * spawnRadius, margin, this.height - margin)
+        : margin + keyedRandom(this.seed, id, "initial-y") * usableHeight;
       const angle = keyedRandom(this.seed, id, "initial-angle") * Math.PI * 2;
       const initialSpeed = 5 + keyedRandom(this.seed, id, "initial-speed") * 8;
       const first = chooseOther(this.seed, id, this.population, "chosen-a", new Set([id]));
@@ -115,6 +252,9 @@ export class SimulationEngine {
         angle,
         radius,
         chosen: [first, second],
+        destinationId: journeys?.enabled
+          ? destinations[(spawnIndex + 1) % destinations.length].id
+          : null,
       };
     });
   }
@@ -126,6 +266,7 @@ export class SimulationEngine {
         position: frozenVector(agent.x, agent.y),
         velocity: frozenVector(agent.vx, agent.vy),
         radius: agent.radius,
+        destinationId: agent.destinationId,
       }),
     );
   }
@@ -257,6 +398,39 @@ export class SimulationEngine {
     return { x, y };
   }
 
+  #currentDestination(agent) {
+    if (!agent.destinationId) return null;
+    return this.environment?.destinations.find((destination) => destination.id === agent.destinationId) || null;
+  }
+
+  #switchArrivedJourneys(agents) {
+    const destinations = this.environment?.destinations || [];
+    if (!this.environment?.journeys.enabled || destinations.length < 2) return agents;
+    const arrivalRadius = this.environment.journeys.arrivalRadius;
+
+    return agents.map((agent) => {
+      const currentIndex = destinations.findIndex((destination) => destination.id === agent.destinationId);
+      if (currentIndex < 0) return { ...agent, destinationId: destinations[agent.id % destinations.length].id };
+      const destination = destinations[currentIndex];
+      const threshold = Math.max(arrivalRadius, destination.radius);
+      if (Math.hypot(agent.x - destination.x, agent.y - destination.y) > threshold) return agent;
+      this.trips += 1;
+      return {
+        ...agent,
+        destinationId: destinations[(currentIndex + 1) % destinations.length].id,
+      };
+    });
+  }
+
+  #fieldPersistence() {
+    if (!this.field || !this.environment?.field) return 1;
+    if (Number.isFinite(Number(this.params.fieldPersistence))) {
+      return clamp(Number(this.params.fieldPersistence), 0, 1);
+    }
+    if (this.environment.field.persistence !== null) return this.environment.field.persistence;
+    return 1 - this.environment.field.decay;
+  }
+
   step(count = 1) {
     const steps = clamp(Math.round(count), 1, 10_000);
     let result = { ok: true, error: null };
@@ -287,6 +461,17 @@ export class SimulationEngine {
       dt: this.dt,
     });
     const readonlyParams = Object.freeze({ ...this.params });
+    const destinations = this.environment?.destinations || Object.freeze([]);
+    const obstacles = this.environment?.obstacles || Object.freeze([]);
+    const fieldApi = this.field?.api || Object.freeze({
+      enabled: false,
+      cols: 0,
+      columns: 0,
+      rows: 0,
+      cellSize: 0,
+      sample: () => 0,
+      gradient: () => frozenVector(0, 0),
+    });
     const intents = [];
     const neighborCache = new WeakMap();
     const observationCache = new WeakMap();
@@ -317,6 +502,10 @@ export class SimulationEngine {
         params: readonlyParams,
         vec,
         world,
+        destination: this.#currentDestination(agent),
+        destinations,
+        obstacles,
+        field: fieldApi,
         tick: this.tick,
         sense: observation,
         random: (key = "default") => keyedRandom(this.seed, this.tick, agent.id, key),
@@ -391,6 +580,16 @@ export class SimulationEngine {
         velocity = { ...velocity, y: -Math.abs(velocity.y) * 0.58 };
       }
 
+      for (const obstacle of obstacles) {
+        const collision = resolveCircleAgainstRectangle({ x, y }, velocity, radius, obstacle);
+        x = collision.position.x;
+        y = collision.position.y;
+        velocity = collision.velocity;
+      }
+
+      x = clamp(x, radius, this.width - radius);
+      y = clamp(y, radius, this.height - radius);
+
       const speed = Math.hypot(velocity.x, velocity.y);
       const angle = speed > 0.05 ? Math.atan2(velocity.y, velocity.x) : agent.angle;
 
@@ -404,7 +603,14 @@ export class SimulationEngine {
       };
     });
 
-    this.agents = nextAgents;
+    this.agents = this.#switchArrivedJourneys(nextAgents);
+    if (this.field) {
+      this.field.evolve(this.agents, {
+        deposit: this.environment.field.deposit,
+        persistence: this.#fieldPersistence(),
+        diffusion: this.environment.field.diffusion,
+      });
+    }
     this.tick += 1;
     this.#recordObservation();
     this.lastError = null;
@@ -422,7 +628,13 @@ export class SimulationEngine {
     if (index < 0) return { ok: false, error: `Agent ${id} does not exist.` };
 
     const agent = this.agents[index];
-    const target = clampWorldPoint({ x, y }, agent.radius, this.width, this.height);
+    let target = clampWorldPoint({ x, y }, agent.radius, this.width, this.height);
+    let targetVelocity = { x: agent.vx, y: agent.vy };
+    for (const obstacle of this.environment?.obstacles || []) {
+      const collision = resolveCircleAgainstRectangle(target, targetVelocity, agent.radius, obstacle);
+      target = collision.position;
+      targetVelocity = collision.velocity;
+    }
     const intervention = Object.freeze({
       sequence: Math.max(this.eventCursor + 1, Math.round(finiteOr(sequence, this.eventCursor + 1))),
       tick: this.tick,
@@ -435,8 +647,8 @@ export class SimulationEngine {
       ...agent,
       x: target.x,
       y: target.y,
-      vx: zeroVelocity ? 0 : agent.vx,
-      vy: zeroVelocity ? 0 : agent.vy,
+      vx: zeroVelocity ? 0 : targetVelocity.x,
+      vy: zeroVelocity ? 0 : targetVelocity.y,
     };
     this.eventCursor = intervention.sequence;
     this.interventions.push(intervention);
@@ -447,7 +659,15 @@ export class SimulationEngine {
   metrics() {
     const count = this.agents.length;
     if (count === 0) {
-      return { spread: 0, nearest: 0, match: 0, meanSpeed: 0 };
+      return {
+        spread: 0,
+        nearest: 0,
+        match: 0,
+        meanSpeed: 0,
+        trailConcentration: 0,
+        totalFootfall: 0,
+        trips: this.trips,
+      };
     }
 
     const centroid = this.agents.reduce(
@@ -469,11 +689,15 @@ export class SimulationEngine {
       nearestTotal += Number.isFinite(nearest) ? nearest : 0;
     }
 
+    const fieldMetrics = this.field?.metrics() || { total: 0, concentration: 0 };
     return {
       spread: Math.sqrt(squaredRadius / count),
       nearest: nearestTotal / count,
       match: this.#relationshipMatch(),
       meanSpeed: speedTotal / count,
+      trailConcentration: fieldMetrics.concentration,
+      totalFootfall: fieldMetrics.total,
+      trips: this.trips,
     };
   }
 
@@ -543,6 +767,13 @@ export class SimulationEngine {
     );
     const delayedObservation = this.#observationAt(configuredDelayTicks);
     const observationAge = this.tick - delayedObservation.tick;
+    const fieldFrame = this.field?.frame() || null;
+    const environmentFrame = this.environment ? {
+      destinations: this.environment.destinations,
+      obstacles: this.environment.obstacles,
+      journeys: this.environment.journeys,
+      field: fieldFrame,
+    } : null;
     return {
       tick: this.tick,
       seed: this.seed,
@@ -561,7 +792,13 @@ export class SimulationEngine {
           params: this.params,
           relationMode: this.relationMode,
           ruleKey: this.ruleKey,
+          ...(this.environment ? { environment: this.environment } : {}),
         },
+        journey: this.environment?.journeys.enabled ? {
+          trips: this.trips,
+          destinationIds: this.agents.map((agent) => agent.destinationId),
+        } : undefined,
+        field: this.field?.values,
       }),
       eventCursor: this.eventCursor,
       lastIntervention: this.interventions.at(-1) || null,
@@ -575,6 +812,8 @@ export class SimulationEngine {
         y: view.position.y,
       })),
       metrics: this.metrics(),
+      environment: environmentFrame,
+      field: fieldFrame,
       agents: this.agents.map((agent) => ({
         id: agent.id,
         x: agent.x,
@@ -584,6 +823,7 @@ export class SimulationEngine {
         angle: agent.angle,
         radius: agent.radius,
         chosen: [...agent.chosen],
+        destinationId: agent.destinationId,
       })),
     };
   }

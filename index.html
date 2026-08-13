@@ -47,7 +47,7 @@
       <section class="simulator-card" aria-labelledby="playground-title">
         <div class="section-heading">
           <div>
-            <p class="eyebrow">Movement laboratory / 01</p>
+            <p class="eyebrow" id="lab-stage">Movement laboratory / 01</p>
             <h1 id="playground-title">Observe the whole, inspect a rule</h1>
           </div>
           <div class="seed-control" title="Resetting with the same seed reproduces the same world">
@@ -71,8 +71,8 @@
           </p>
           <div class="canvas-legend" id="canvas-legend" aria-hidden="true">
             <span><i class="legend-self"></i> selected</span>
-            <span><i class="legend-a"></i> person A</span>
-            <span><i class="legend-b"></i> person B</span>
+            <span id="legend-a-item"><i class="legend-a"></i><span id="legend-a-label">person A</span></span>
+            <span id="legend-b-item"><i class="legend-b"></i><span id="legend-b-label">person B</span></span>
           </div>
         </div>
 
@@ -82,23 +82,23 @@
 
         <div class="metrics-strip" aria-label="Live simulation measurements">
           <article class="metric">
-            <span>Group spread</span>
+            <span id="primary-metric-label">Group spread</span>
             <strong id="spread-value">—</strong>
-            <small>radius from centre</small>
+            <small id="primary-metric-detail">radius from centre</small>
           </article>
           <article class="metric">
-            <span>Nearest neighbour</span>
+            <span id="secondary-metric-label">Nearest neighbour</span>
             <strong id="nearest-value">—</strong>
-            <small>mean distance</small>
+            <small id="secondary-metric-detail">mean distance</small>
           </article>
           <article class="metric metric-with-chart">
             <div>
-              <span>Rule match</span>
+              <span id="metric-label">Rule match</span>
               <strong id="match-value">—</strong>
               <small id="match-label">relationship satisfied</small>
             </div>
             <div class="metric-chart-wrap">
-              <span>Spread trend</span>
+              <span id="trend-label">Spread trend</span>
               <svg id="metric-chart" viewBox="0 0 132 42" role="img" aria-label="Recent group spread">
                 <path class="chart-baseline" d="M1 40.5 H131"></path>
                 <polyline id="metric-line" points=""></polyline>
@@ -150,7 +150,7 @@
 
       <aside class="editor-card" aria-labelledby="lesson-title">
         <section class="lesson-card">
-          <div class="lesson-number" aria-hidden="true">01</div>
+          <div class="lesson-number" id="lesson-number" aria-hidden="true">01</div>
           <div>
             <p class="eyebrow" id="lesson-kicker">Convergent behaviour</p>
             <h2 id="lesson-title">Stand between two people</h2>
@@ -205,6 +205,10 @@
               <div><dt><code>vec.equilateral(a, b, side)</code></dt><dd>third triangle corner</dd></div>
               <div><dt><code>sense(ticksAgo)</code></dt><dd>read past positions</dd></div>
               <div><dt><code>random(key)</code></dt><dd>seeded value from 0 to 1</dd></div>
+              <div><dt><code>destination</code></dt><dd>current journey destination, when enabled</dd></div>
+              <div><dt><code>obstacles</code></dt><dd>read-only rectangles in the world</dd></div>
+              <div><dt><code>field.sample(point)</code></dt><dd>footfall strength at a point</dd></div>
+              <div><dt><code>field.gradient(point, step)</code></dt><dd>direction of rising footfall</dd></div>
             </dl>
             <p class="trust-note">Prototype note: run only code you trust. The worker protects the interface from accidental loops, but it is not a security sandbox.</p>
           </div>
@@ -231,10 +235,10 @@
             <div><strong>Movement laboratory</strong><p>Social references, steering rules, seeded comparison, trails and spatial metrics.</p></div>
             <em>Now</em>
           </li>
-          <li>
+          <li class="is-current">
             <span>02</span>
-            <div><strong>Interaction laboratory</strong><p>Destinations, obstacles, fields, desire paths and side-by-side experiments.</p></div>
-            <em>Next</em>
+            <div><strong>Interaction laboratory</strong><p>Destinations, obstacles, fields and the first live desire-path experiment.</p></div>
+            <em>Now</em>
           </li>
           <li>
             <span>03</span>

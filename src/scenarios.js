@@ -109,6 +109,66 @@ const wanderSource = `function behave({ self, params, random }) {
   };
 }`;
 
+const desirePathSource = `function behave({ self, destination, obstacles, field, params, vec }) {
+  if (!destination) return { acceleration: { x: 0, y: 0 } };
+
+  const goal = { x: destination.x, y: destination.y };
+  const forward = vec.unit(vec.subtract(goal, self.position));
+  const lateral = { x: -forward.y, y: forward.x };
+
+  // Compare footfall just ahead and to either side. A stronger trace can
+  // recruit later walkers onto an earlier route; zero influence removes
+  // that feedback while leaving the destinations and obstacle unchanged.
+  const lookAhead = vec.add(self.position, vec.scale(forward, 42));
+  const leftProbe = vec.add(lookAhead, vec.scale(lateral, 30));
+  const rightProbe = vec.add(lookAhead, vec.scale(lateral, -30));
+  const traceTurn = (
+    field.sample(leftProbe) - field.sample(rightProbe)
+  ) * params.trailInfluence;
+  // Pairs leave each gate with opposite exploratory preferences. This avoids
+  // baking a winning side into the preset while remaining seed-reproducible.
+  const inheritedTurn = self.id % 4 < 2 ? -1 : 1;
+  const turn = Math.abs(traceTurn) > 0.004
+    ? (traceTurn > 0 ? 1 : -1)
+    : inheritedTurn;
+
+  let target = goal;
+  const obstacle = obstacles[0];
+  if (obstacle) {
+    const clearance = 46;
+    const rightEdge = obstacle.x + obstacle.width;
+    const bottomEdge = obstacle.y + obstacle.height;
+    const obstacleAhead = (
+      forward.x >= 0
+        ? self.position.x < rightEdge + clearance && goal.x > obstacle.x
+        : self.position.x > obstacle.x - clearance && goal.x < rightEdge
+    );
+    const nearObstacleBand = (
+      self.position.y > obstacle.y - clearance &&
+      self.position.y < bottomEdge + clearance
+    );
+
+    if (obstacleAhead && nearObstacleBand) {
+      // Use a near and far corner so the segment does not cut through the
+      // rectangle. "Turn" is relative to the current walking direction.
+      const goBelow = lateral.y * turn > 0;
+      const routeY = goBelow ? bottomEdge + clearance : obstacle.y - clearance;
+      const walkingRight = forward.x >= 0;
+      const approaching = walkingRight
+        ? self.position.x < obstacle.x - clearance * 0.35
+        : self.position.x > rightEdge + clearance * 0.35;
+      const routeX = walkingRight
+        ? (approaching ? obstacle.x - clearance : rightEdge + clearance)
+        : (approaching ? rightEdge + clearance : obstacle.x - clearance);
+      target = { x: routeX, y: routeY };
+    }
+  }
+
+  return {
+    acceleration: vec.seek(self, target, params.strength)
+  };
+}`;
+
 export const scenarios = [
   {
     id: "between",
@@ -268,7 +328,91 @@ export const scenarios = [
       { key: "personalSpace", label: "Personal space", min: 0, max: 18, step: 1 },
     ],
   },
-];
+  {
+    id: "desire-paths",
+    title: "Trace · reveal desire paths",
+    shortTitle: "Reveal desire paths",
+    kicker: "Movement leaves a memory",
+    stage: { number: "02", label: "Interaction laboratory / 02" },
+    description:
+      "People make repeated trips between two destinations around one obstruction. Every footstep adds a fading trace; walkers sample the ground ahead, so routes that are used become more attractive to those who follow.",
+    steps: ["Walk toward the other destination", "Route around the obstruction", "Prefer the stronger trace ahead"],
+    question: "Before running: will traffic keep two equal routes, or will a small early advantage recruit later walkers into one shared path? Set trail influence to zero for the control run.",
+    relationMode: "none",
+    matchLabel: "footfall held by the busiest cells",
+    summaryMetrics: [
+      { label: "Completed trips", key: "trips", format: "integer", detail: "gate-to-gate arrivals" },
+      { label: "Nearest neighbour", key: "nearest", format: "units", detail: "crowding along the route" },
+    ],
+    metric: {
+      label: "Trail concentration",
+      key: "trailConcentration",
+      format: "fraction-percent",
+      fallback: "forming…",
+      detail: "footfall in busiest cells",
+    },
+    trend: {
+      label: "Concentration trend",
+      key: "trailConcentration",
+      ariaLabel: "Recent trail concentration",
+      minimumRange: 0.08,
+    },
+    source: desirePathSource,
+    environment: {
+      destinations: [
+        { id: "west", label: "West gate", x: 120, y: 325, radius: 34 },
+        { id: "east", label: "East gate", x: 880, y: 325, radius: 34 },
+      ],
+      obstacles: [
+        { id: "central-block", x: 430, y: 230, width: 140, height: 190 },
+      ],
+      journeys: {
+        enabled: true,
+        spawnAtDestinations: true,
+        arrivalRadius: 30,
+      },
+      field: {
+        enabled: true,
+        cellSize: 14,
+        deposit: 1,
+        decay: 0.006,
+        diffusion: 0.06,
+      },
+    },
+    params: {
+      trailInfluence: 1,
+      strength: 2.4,
+      maxSpeed: 82,
+      fieldPersistence: 0.994,
+    },
+    controls: [
+      { key: "trailInfluence", label: "Trail influence", min: 0, max: 2, step: 0.05, format: "decimal-2" },
+      { key: "strength", label: "Response strength", min: 0.4, max: 4, step: 0.1 },
+      { key: "maxSpeed", label: "Walking speed", min: 30, max: 150, step: 2 },
+      { key: "fieldPersistence", label: "Trace persistence", min: 0.96, max: 0.999, step: 0.001, format: "percent" },
+    ],
+  },
+].map((scenario) => ({
+  ...scenario,
+  stage: scenario.stage || { number: "01", label: "Movement laboratory / 01" },
+  summaryMetrics: scenario.summaryMetrics || [
+    { label: "Group spread", key: "spread", format: "units", detail: "radius from centre" },
+    { label: "Nearest neighbour", key: "nearest", format: "units", detail: "mean distance" },
+  ],
+  metric: scenario.metric || {
+    label: "Rule match",
+    key: "match",
+    format: "percent",
+    fallback: "baseline",
+    detail: scenario.matchLabel,
+  },
+  trend: scenario.trend || {
+    label: "Spread trend",
+    key: "spread",
+    ariaLabel: "Recent group spread",
+    minimumRange: 8,
+  },
+}));
 
 export function getScenario(id) {
   return scenarios.find((scenario) => scenario.id === id) || scenarios[0];

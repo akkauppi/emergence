@@ -10,6 +10,11 @@ const ui = {
   canvasStatus: element("canvas-status"),
   canvasInstruction: element("canvas-instruction"),
   canvasDelay: element("canvas-delay"),
+  canvasLegend: element("canvas-legend"),
+  legendAItem: element("legend-a-item"),
+  legendALabel: element("legend-a-label"),
+  legendBItem: element("legend-b-item"),
+  legendBLabel: element("legend-b-label"),
   canvasDescription: element("canvas-description"),
   play: element("play-button"),
   playIcon: element("play-icon"),
@@ -23,11 +28,20 @@ const ui = {
   relations: element("relations-toggle"),
   parameters: element("parameter-controls"),
   spread: element("spread-value"),
+  primaryMetricLabel: element("primary-metric-label"),
+  primaryMetricDetail: element("primary-metric-detail"),
   nearest: element("nearest-value"),
+  secondaryMetricLabel: element("secondary-metric-label"),
+  secondaryMetricDetail: element("secondary-metric-detail"),
   match: element("match-value"),
+  metricLabel: element("metric-label"),
   matchLabel: element("match-label"),
+  trendLabel: element("trend-label"),
+  metricChart: element("metric-chart"),
   metricLine: element("metric-line"),
   lessonKicker: element("lesson-kicker"),
+  labStage: element("lab-stage"),
+  lessonNumber: element("lesson-number"),
   lessonTitle: element("lesson-title"),
   lessonDescription: element("lesson-description"),
   ruleSteps: element("rule-steps"),
@@ -91,6 +105,7 @@ function workerConfiguration() {
     height: 650,
     params: { ...state.params },
     relationMode: state.scenario.relationMode,
+    environment: state.scenario.environment ?? null,
     tempo: Number(ui.tempo.value),
   };
 }
@@ -204,8 +219,11 @@ function receiveFrame(frame) {
     state.lastMetricTick = -1;
   }
   if (frame.tick !== state.lastMetricTick) {
-    state.metricHistory.push(frame.metrics.spread);
-    if (state.metricHistory.length > 90) state.metricHistory.shift();
+    const trendValue = Number(frame.metrics[state.scenario.trend.key]);
+    if (Number.isFinite(trendValue)) {
+      state.metricHistory.push(trendValue);
+      if (state.metricHistory.length > 90) state.metricHistory.shift();
+    }
     state.lastMetricTick = frame.tick;
   }
   renderer.update(frame);
@@ -216,9 +234,12 @@ function receiveFrame(frame) {
 function renderMetrics(frame) {
   ui.tick.textContent = String(frame.tick);
   ui.seed.textContent = String(frame.seed);
-  ui.spread.textContent = `${Math.round(frame.metrics.spread)} u`;
-  ui.nearest.textContent = `${Math.round(frame.metrics.nearest)} u`;
-  ui.match.textContent = frame.metrics.match === null ? "baseline" : `${Math.round(frame.metrics.match)}%`;
+  const [primaryMetric, secondaryMetric] = state.scenario.summaryMetrics;
+  ui.spread.textContent = formatMetric(frame.metrics[primaryMetric.key], primaryMetric);
+  ui.nearest.textContent = formatMetric(frame.metrics[secondaryMetric.key], secondaryMetric);
+  const metric = state.scenario.metric;
+  const metricValue = frame.metrics[metric.key];
+  ui.match.textContent = formatMetric(metricValue, metric);
   if (ui.canvasDelay) {
     const configuredDelay = frame.configuredDelayTicks ?? frame.delayTicks ?? 0;
     const observationAge = frame.observationAge ?? frame.delayTicks ?? 0;
@@ -232,6 +253,14 @@ function renderMetrics(frame) {
   drawMetricHistory();
 }
 
+function formatMetric(value, definition) {
+  if (!Number.isFinite(value)) return definition.fallback || "—";
+  if (definition.format === "fraction-percent") return `${Math.round(value * 100)}%`;
+  if (definition.format === "percent") return `${Math.round(value)}%`;
+  if (definition.format === "units") return `${Math.round(value)} u`;
+  return String(Math.round(value));
+}
+
 function drawMetricHistory() {
   if (state.metricHistory.length < 2) {
     ui.metricLine.setAttribute("points", "");
@@ -239,7 +268,7 @@ function drawMetricHistory() {
   }
   const minimum = Math.min(...state.metricHistory);
   const maximum = Math.max(...state.metricHistory);
-  const range = Math.max(8, maximum - minimum);
+  const range = Math.max(state.scenario.trend.minimumRange ?? 8, maximum - minimum);
   const points = state.metricHistory.map((value, index) => {
     const x = 2 + (index / Math.max(1, state.metricHistory.length - 1)) * 128;
     const y = 38 - ((value - minimum) / range) * 34;
@@ -264,17 +293,29 @@ function updateRunningUi() {
 function updateCanvasDescription(force = false) {
   if (!force || !state.frame) return;
   const selected = state.frame.agents.find((agent) => agent.id === renderer.selectedId);
+  const selectedDestination = state.frame.environment?.destinations?.find(
+    (destination) => destination.id === selected?.destinationId,
+  );
   const selection = selected
-    ? ` Selected person ${selected.id} follows people ${selected.chosen[0]} and ${selected.chosen[1]}.`
+    ? state.scenario.environment?.journeys?.enabled
+      ? ` Selected person ${selected.id} is travelling toward ${
+        selectedDestination?.label || selected.destinationId || "the opposite destination"
+      }.`
+      : ` Selected person ${selected.id} follows people ${selected.chosen[0]} and ${selected.chosen[1]}.`
     : "";
   const configuredDelay = state.frame.configuredDelayTicks ?? state.frame.delayTicks ?? 0;
   const observationAge = state.frame.observationAge ?? state.frame.delayTicks ?? 0;
   const warmup = configuredDelay > observationAge ? `, currently ${observationAge} ticks of history` : "";
+  const scenarioMeasurement = state.scenario.environment?.field?.enabled
+    ? ` Trail concentration ${formatMetric(state.frame.metrics.trailConcentration, state.scenario.metric)}; ${
+      state.frame.metrics.trips ?? 0
+    } completed trips.`
+    : ` Group spread ${Math.round(state.frame.metrics.spread)}. Reaction delay ${
+      configuredDelay
+    } ticks${warmup}.`;
   ui.canvasDescription.textContent = `${state.scenario.shortTitle}. ${state.population} people. ${
     state.running ? "Running" : "Paused"
-  } at tick ${state.frame.tick}. Group spread ${Math.round(state.frame.metrics.spread)}. Reaction delay ${
-    configuredDelay
-  } ticks${warmup}.${selection}${state.perturbed ? " A manual perturbation has been applied." : ""}`;
+  } at tick ${state.frame.tick}.${scenarioMeasurement}${selection}${state.perturbed ? " A manual perturbation has been applied." : ""}`;
 }
 
 function updateCanvasInstruction(mode = "default") {
@@ -385,11 +426,14 @@ function renderParameterControls() {
 
 function formatParameter(value, definition = {}) {
   if (definition.unit === "tick") return `${value} ${Number(value) === 1 ? "tick" : "ticks"}`;
+  if (definition.format === "percent") return `${(Number(value) * 100).toFixed(1)}%`;
+  if (definition.format === "decimal-2") return Number(value).toFixed(2);
   return Number.isInteger(value) ? String(value) : Number(value).toFixed(1);
 }
 
 function loadScenario(scenario, { preserveSeed = true } = {}) {
   state.scenario = scenario;
+  document.body.dataset.scenario = scenario.id;
   state.params = copyParameters(scenario);
   state.source = scenario.source;
   state.appliedSource = scenario.source;
@@ -402,6 +446,8 @@ function loadScenario(scenario, { preserveSeed = true } = {}) {
   clearInterventionState();
 
   ui.scenario.value = scenario.id;
+  ui.labStage.textContent = scenario.stage.label;
+  ui.lessonNumber.textContent = scenario.stage.number;
   ui.lessonKicker.textContent = scenario.kicker;
   ui.lessonTitle.textContent = scenario.shortTitle;
   ui.lessonDescription.textContent = scenario.description;
@@ -413,7 +459,21 @@ function loadScenario(scenario, { preserveSeed = true } = {}) {
     }),
   );
   ui.question.textContent = scenario.question;
-  ui.matchLabel.textContent = scenario.matchLabel;
+  const [primaryMetric, secondaryMetric] = scenario.summaryMetrics;
+  ui.primaryMetricLabel.textContent = primaryMetric.label;
+  ui.primaryMetricDetail.textContent = primaryMetric.detail;
+  ui.secondaryMetricLabel.textContent = secondaryMetric.label;
+  ui.secondaryMetricDetail.textContent = secondaryMetric.detail;
+  ui.metricLabel.textContent = scenario.metric.label;
+  ui.matchLabel.textContent = scenario.metric.detail || scenario.matchLabel;
+  ui.trendLabel.textContent = scenario.trend.label;
+  ui.metricChart.setAttribute("aria-label", scenario.trend.ariaLabel);
+  const hasJourneys = Boolean(scenario.environment?.journeys?.enabled);
+  const hasSocialRelations = scenario.relationMode !== "none";
+  ui.legendAItem.hidden = !hasJourneys && !hasSocialRelations;
+  ui.legendBItem.hidden = !hasJourneys && !hasSocialRelations;
+  ui.legendALabel.textContent = hasJourneys ? "destination" : "person A";
+  ui.legendBLabel.textContent = hasJourneys ? "footfall" : "person B";
   ui.editor.value = scenario.source;
   renderer.setScenario(scenario.relationMode, state.params);
   renderer.setSelected(0);

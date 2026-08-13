@@ -10,9 +10,103 @@ const COLORS = {
   personA: "#91a9ff",
   personB: "#f3c35c",
   target: "#f4ede0",
+  destination: "#70d6b5",
+  obstacle: "#0c1728",
 };
 
 const DRAG_THRESHOLD_CSS_PIXELS = 6;
+const MAX_FIELD_CELLS = 4_194_304;
+
+function finiteNumber(value, fallback = null) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+export function normalizeFieldValue(value, maxValue) {
+  const numericValue = finiteNumber(value, 0);
+  const numericMaximum = finiteNumber(maxValue, 0);
+  if (numericValue <= 0 || numericMaximum <= 0) return 0;
+  return Math.min(1, numericValue / numericMaximum);
+}
+
+function writeScalarFieldColor(target, offset, value, maxValue) {
+  const normalized = normalizeFieldValue(value, maxValue);
+  if (normalized === 0) {
+    target[offset] = 0;
+    target[offset + 1] = 0;
+    target[offset + 2] = 0;
+    target[offset + 3] = 0;
+    return;
+  }
+
+  // A perceptual lift keeps faint, early paths visible without letting hot cells
+  // obscure the agents that move across them.
+  const intensity = Math.sqrt(normalized);
+  target[offset] = Math.round(67 + (245 - 67) * intensity);
+  target[offset + 1] = Math.round(142 + (184 - 142) * intensity);
+  target[offset + 2] = Math.round(186 + (82 - 186) * intensity);
+  target[offset + 3] = Math.round(18 + 142 * intensity);
+}
+
+export function scalarFieldColor(value, maxValue) {
+  const color = [0, 0, 0, 0];
+  writeScalarFieldColor(color, 0, value, maxValue);
+  return color;
+}
+
+export function resolveObstacleRect(obstacle) {
+  if (!obstacle || typeof obstacle !== "object") return null;
+  const width = finiteNumber(obstacle.width ?? obstacle.w ?? obstacle.size?.width);
+  const height = finiteNumber(obstacle.height ?? obstacle.h ?? obstacle.size?.height);
+  if (width === null || height === null || width <= 0 || height <= 0) return null;
+
+  const explicitX = finiteNumber(obstacle.x ?? obstacle.position?.x);
+  const explicitY = finiteNumber(obstacle.y ?? obstacle.position?.y);
+  const centreX = finiteNumber(obstacle.centerX ?? obstacle.centreX);
+  const centreY = finiteNumber(obstacle.centerY ?? obstacle.centreY);
+  const x = explicitX ?? (centreX === null ? null : centreX - width / 2);
+  const y = explicitY ?? (centreY === null ? null : centreY - height / 2);
+  if (x === null || y === null) return null;
+  return { x, y, width, height };
+}
+
+export function resolveDestination(destination) {
+  if (!destination || typeof destination !== "object") return null;
+  const x = finiteNumber(destination.x ?? destination.position?.x);
+  const y = finiteNumber(destination.y ?? destination.position?.y);
+  if (x === null || y === null) return null;
+  return {
+    x,
+    y,
+    radius: Math.max(1, finiteNumber(destination.radius ?? destination.r, 18)),
+  };
+}
+
+export function resolveScalarField(frame) {
+  const field = frame?.field ?? frame?.environment?.field;
+  if (!field || typeof field !== "object") return null;
+  const columns = Math.floor(finiteNumber(field.columns ?? field.cols ?? field.width, 0));
+  const rows = Math.floor(finiteNumber(field.rows ?? field.height, 0));
+  const values = field.values ?? field.data;
+  const cellCount = columns * rows;
+  if (
+    columns <= 0
+    || rows <= 0
+    || cellCount > MAX_FIELD_CELLS
+    || !values
+    || typeof values.length !== "number"
+    || values.length < cellCount
+  ) return null;
+
+  let maxValue = finiteNumber(field.maxValue ?? field.max ?? field.maximum, 0);
+  if (maxValue <= 0) {
+    maxValue = 0;
+    for (let index = 0; index < cellCount; index += 1) {
+      maxValue = Math.max(maxValue, finiteNumber(values[index], 0));
+    }
+  }
+  return { field, columns, rows, values, cellCount, maxValue };
+}
 
 export function calculateViewport(cssWidth, cssHeight, worldWidth = 1_000, worldHeight = 650, padding = 8) {
   const availableWidth = Math.max(1, cssWidth - padding * 2);
@@ -54,6 +148,7 @@ export class CanvasRenderer {
     this.trails = new Map();
     this.drag = null;
     this.pendingPerturbation = null;
+    this.fieldCache = null;
     this.viewport = { scale: 1, offsetX: 0, offsetY: 0, cssWidth: 0, cssHeight: 0 };
 
     this.resizeObserver = new ResizeObserver(() => this.draw());
@@ -175,7 +270,9 @@ export class CanvasRenderer {
     context.save();
     context.translate(this.viewport.offsetX, this.viewport.offsetY);
     context.scale(this.viewport.scale, this.viewport.scale);
+    this.#drawScalarField(context);
     this.#drawGrid(context);
+    this.#drawEnvironment(context);
     this.#drawTrails(context);
     if (this.relationsEnabled) this.#drawRelations(context);
     this.#drawAgents(context);
@@ -205,6 +302,136 @@ export class CanvasRenderer {
     context.strokeStyle = "rgba(226, 235, 255, 0.14)";
     context.lineWidth = thin * 1.4;
     context.strokeRect(0, 0, width, height);
+  }
+
+  #createFieldSurface(columns, rows) {
+    let surface = null;
+    if (typeof document !== "undefined" && typeof document.createElement === "function") {
+      surface = document.createElement("canvas");
+      surface.width = columns;
+      surface.height = rows;
+    } else if (typeof OffscreenCanvas !== "undefined") {
+      surface = new OffscreenCanvas(columns, rows);
+    }
+    if (!surface) return null;
+    const context = surface.getContext("2d", { alpha: true });
+    return context ? { surface, context } : null;
+  }
+
+  #drawScalarField(context) {
+    const descriptor = resolveScalarField(this.frame);
+    if (!descriptor) {
+      this.fieldCache = null;
+      return;
+    }
+
+    const { field, columns, rows, values, cellCount, maxValue } = descriptor;
+    const reusable = this.fieldCache
+      && this.fieldCache.columns === columns
+      && this.fieldCache.rows === rows;
+    const cache = reusable ? this.fieldCache : this.#createFieldSurface(columns, rows);
+    if (!cache) return;
+
+    if (cache.frame !== this.frame || cache.field !== field) {
+      const image = cache.image || cache.context.createImageData(columns, rows);
+      for (let index = 0; index < cellCount; index += 1) {
+        writeScalarFieldColor(image.data, index * 4, values[index], maxValue);
+      }
+      cache.context.clearRect(0, 0, columns, rows);
+      cache.context.putImageData(image, 0, 0);
+      cache.frame = this.frame;
+      cache.field = field;
+      cache.columns = columns;
+      cache.rows = rows;
+      cache.image = image;
+      this.fieldCache = cache;
+    }
+
+    context.save();
+    context.imageSmoothingEnabled = true;
+    context.drawImage(cache.surface, 0, 0, this.frame.width, this.frame.height);
+    context.restore();
+  }
+
+  #drawEnvironment(context) {
+    const environment = this.frame.environment;
+    if (!environment || typeof environment !== "object") return;
+
+    const obstacles = Array.isArray(environment.obstacles) ? environment.obstacles : [];
+    const destinations = Array.isArray(environment.destinations) ? environment.destinations : [];
+    const hairline = 1 / this.viewport.scale;
+
+    for (const obstacle of obstacles) {
+      const rect = resolveObstacleRect(obstacle);
+      if (!rect) continue;
+      context.save();
+      context.fillStyle = COLORS.obstacle;
+      context.strokeStyle = "rgba(242, 122, 80, 0.72)";
+      context.lineWidth = hairline * 1.4;
+      context.fillRect(rect.x, rect.y, rect.width, rect.height);
+      context.strokeRect(rect.x, rect.y, rect.width, rect.height);
+      context.beginPath();
+      context.moveTo(rect.x, rect.y);
+      context.lineTo(rect.x + rect.width, rect.y + rect.height);
+      context.moveTo(rect.x + rect.width, rect.y);
+      context.lineTo(rect.x, rect.y + rect.height);
+      context.globalAlpha = 0.32;
+      context.stroke();
+      context.restore();
+      this.#drawEnvironmentLabel(
+        context,
+        obstacle.label ?? obstacle.name,
+        rect.x + rect.width / 2,
+        rect.y + rect.height / 2,
+        "rgba(245, 187, 167, 0.88)",
+      );
+    }
+
+    for (const destination of destinations) {
+      const node = resolveDestination(destination);
+      if (!node) continue;
+      context.save();
+      const halo = context.createRadialGradient(node.x, node.y, 0, node.x, node.y, node.radius * 1.7);
+      halo.addColorStop(0, "rgba(112, 214, 181, 0.36)");
+      halo.addColorStop(0.5, "rgba(112, 214, 181, 0.13)");
+      halo.addColorStop(1, "rgba(112, 214, 181, 0)");
+      context.fillStyle = halo;
+      context.beginPath();
+      context.arc(node.x, node.y, node.radius * 1.7, 0, Math.PI * 2);
+      context.fill();
+      context.fillStyle = "rgba(20, 52, 57, 0.9)";
+      context.strokeStyle = COLORS.destination;
+      context.lineWidth = hairline * 1.7;
+      context.beginPath();
+      context.arc(node.x, node.y, node.radius, 0, Math.PI * 2);
+      context.fill();
+      context.stroke();
+      context.beginPath();
+      context.moveTo(node.x - node.radius * 0.42, node.y);
+      context.lineTo(node.x + node.radius * 0.42, node.y);
+      context.moveTo(node.x, node.y - node.radius * 0.42);
+      context.lineTo(node.x, node.y + node.radius * 0.42);
+      context.stroke();
+      context.restore();
+      this.#drawEnvironmentLabel(
+        context,
+        destination.label ?? destination.name,
+        node.x,
+        node.y - node.radius - 8 / this.viewport.scale,
+        COLORS.destination,
+      );
+    }
+  }
+
+  #drawEnvironmentLabel(context, label, x, y, color) {
+    if (label === undefined || label === null || label === "") return;
+    context.save();
+    context.font = `700 ${8 / this.viewport.scale}px ui-monospace, monospace`;
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.fillStyle = color;
+    context.fillText(String(label), x, y);
+    context.restore();
   }
 
   #drawTrails(context) {
@@ -242,6 +469,24 @@ export class CanvasRenderer {
     const canonicalSelf = this.#agentById(this.selectedId);
     if (!canonicalSelf) return;
     const self = this.#displayAgent(canonicalSelf);
+
+    if (this.relationMode === "none") {
+      const destination = (this.frame.environment?.destinations || [])
+        .find((candidate) => candidate.id === canonicalSelf.destinationId);
+      const target = resolveDestination(destination);
+      if (!target) return;
+      context.save();
+      context.setLineDash([5 / this.viewport.scale, 6 / this.viewport.scale]);
+      context.lineWidth = 1.35 / this.viewport.scale;
+      context.strokeStyle = "rgba(112, 214, 181, 0.62)";
+      context.beginPath();
+      context.moveTo(self.x, self.y);
+      context.lineTo(target.x, target.y);
+      context.stroke();
+      context.restore();
+      return;
+    }
+
     const currentFirst = this.#agentById(canonicalSelf.chosen[0]);
     const currentSecond = this.#agentById(canonicalSelf.chosen[1]);
     if (!currentFirst || !currentSecond) return;
@@ -393,8 +638,9 @@ export class CanvasRenderer {
   #drawAgents(context) {
     const canonicalSelected = this.#agentById(this.selectedId);
     const selected = canonicalSelected ? this.#displayAgent(canonicalSelected) : null;
-    const firstId = canonicalSelected?.chosen[0];
-    const secondId = canonicalSelected?.chosen[1];
+    const hasSocialRelations = this.relationMode !== "none";
+    const firstId = hasSocialRelations ? canonicalSelected?.chosen[0] : null;
+    const secondId = hasSocialRelations ? canonicalSelected?.chosen[1] : null;
 
     for (const canonicalAgent of this.frame.agents) {
       const agent = this.#displayAgent(canonicalAgent);

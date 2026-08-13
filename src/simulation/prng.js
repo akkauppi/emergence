@@ -54,12 +54,22 @@ function hashAgents(checksum, agents) {
     const chosen = agent.chosen || [];
     checksum = avalanche(checksum ^ hashPart(chosen[0] ?? -1));
     checksum = avalanche(checksum ^ hashPart(chosen[1] ?? -1));
+    checksum = avalanche(checksum ^ hashPart(agent.destinationId ?? ""));
   }
   return checksum;
 }
 
 function hashCanonicalValue(checksum, value) {
   if (value === null) return avalanche(checksum ^ hashPart("null"));
+
+  if (ArrayBuffer.isView(value)) {
+    checksum = avalanche(checksum ^ hashPart(`typed:${value.constructor.name}:${value.length}`));
+    const words = new Uint32Array(value.buffer, value.byteOffset, Math.floor(value.byteLength / 4));
+    for (const word of words) {
+      checksum = avalanche(checksum ^ word);
+    }
+    return checksum;
+  }
 
   if (Array.isArray(value)) {
     checksum = avalanche(checksum ^ hashPart(`array:${value.length}`));
@@ -95,6 +105,14 @@ export function stateChecksum(agents, tick = 0, hiddenState = {}) {
 
   if (hiddenState.configuration !== undefined) {
     checksum = hashCanonicalValue(checksum, hiddenState.configuration);
+  }
+
+  if (hiddenState.journey !== undefined) {
+    checksum = hashCanonicalValue(checksum, hiddenState.journey);
+  }
+
+  if (hiddenState.field !== undefined) {
+    checksum = hashCanonicalValue(checksum, hiddenState.field);
   }
 
   return checksum.toString(16).padStart(8, "0");

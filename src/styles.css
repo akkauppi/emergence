@@ -459,6 +459,9 @@ button:disabled {
 .legend-a { background: #92a9ff; }
 .legend-b { background: #f2c35d; }
 
+body[data-scenario="desire-paths"] .legend-a { background: #70d6b5; }
+body[data-scenario="desire-paths"] .legend-b { background: #f5b852; }
+
 .metrics-strip {
   display: grid;
   grid-template-columns: 0.8fr 0.8fr 1.25fr;
@@ -544,6 +547,14 @@ button:disabled {
   stroke-linejoin: round;
   stroke-width: 2.2;
   vector-effect: non-scaling-stroke;
+}
+
+body[data-scenario="desire-paths"] #metric-line {
+  stroke: #48b995;
+}
+
+body[data-scenario="desire-paths"] .metric-with-chart {
+  background: linear-gradient(90deg, rgba(112, 214, 181, 0.045), rgba(112, 214, 181, 0.12));
 }
 
 .control-deck {

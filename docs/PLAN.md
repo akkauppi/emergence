@@ -34,6 +34,12 @@ visible. Dragging a person creates one atomic intervention at a recorded tick, z
 their velocity, preserves their relationships, and then lets the cascade continue.
 The current slice records intervention metadata but does not yet export or replay it.
 
+The first movement-to-morphology preset is now also implemented:
+
+- **Reveal desire paths:** agents make repeat journeys between two gates separated by a rectangular obstruction. Every step deposits footfall into a scalar field; the field fades, and the editable behavior samples ahead and laterally to choose between routes. This is a feedback loop rather than a painted trail: movement changes the field and the field can change later movement.
+- **Control comparison:** setting trail influence to zero preserves the same destinations, obstruction, people, and seed while removing only the field-to-movement feedback.
+- **Scenario-authored measurement:** the preset replaces relationship match and spread history with trail concentration and its own concentration history.
+
 ## 3. MVP scope and acceptance criteria
 
 The current milestone is a movement laboratory suitable for a ten-minute classroom demonstration and a longer student experiment.
@@ -81,7 +87,7 @@ Stable numeric IDs, deterministic social references, and keyed random values mak
 The editable function receives bounded observations and returns an intent:
 
 ```js
-function behave({ self, chosen, params, vec, random, tick, world }) {
+function behave({ self, chosen, destination, obstacles, field, params, vec, random, tick, world }) {
   const target = vec.midpoint(chosen[0].position, chosen[1].position);
   return { acceleration: vec.seek(self, target, params.strength) };
 }
@@ -92,6 +98,13 @@ contract and should use only their arguments; the current JavaScript runtime is 
 security boundary and cannot enforce purity against deliberately hostile code. Movement
 is only the first intent family. The same boundary will later accept validated
 `emitField`, `reserveLand`, `claimLand`, `build`, and `connect` intents.
+
+When a journey environment is enabled, `destination` identifies the agent's current
+goal, `obstacles` describes read-only rectangular constraints, and the field API exposes
+normalized `sample(point)` and `gradient(point, step)` queries. On arrival, the engine
+counts a trip and assigns the opposite destination. Footfall deposition, decay, field
+diffusion, obstacle collision, and journey reassignment remain engine-owned mechanics;
+student code chooses only its steering acceleration.
 
 ### Runtime safety path
 
@@ -110,9 +123,15 @@ Learning questions:
 
 Measurements: radius of gyration, mean nearest-neighbour distance, relationship error, speed, and cluster count (cluster count is a near-term addition).
 
-### Stage 2 — Interaction laboratory
+### Stage 2 — Interaction laboratory (first vertical slice implemented)
 
 Add local neighbourhood sensing, field of view, alignment, destinations, obstacles, and scalar fields. Repeated footfall reinforces a trail field and unused traces decay. Students can compare emergent desire paths, congestion, and landmark placement.
+
+The current vertical slice includes two destinations, rectangular obstacles, repeated
+journeys, obstacle collision, a deposited/decaying footfall grid, behavior-level field
+sensing, a rendered heat field, trip counts, and trail concentration. Local field of
+view, heterogeneous destinations, congestion measures, and side-by-side comparison
+remain follow-ups.
 
 Measurements: polarization, connected components, trip length, detour ratio, trail concentration, density heat maps, and side-by-side metric histories.
 
@@ -177,8 +196,9 @@ Conflicting actions are grouped by target and resolved centrally. A reservation 
 ### 0.2 — Movement and traces
 
 - Spatial hash behind a `NeighborIndex` interface
-- Obstacles, origins/destinations, field of view, and heterogeneous agents
-- Footfall field, decay, desire-path renderer, and scenario-authored metric panels
+- Obstacles and repeat origin/destination journeys (implemented for rectangular obstacles and paired destinations)
+- Footfall field, decay, desire-path renderer, and scenario-authored metric panels (implemented foundation)
+- Field of view and heterogeneous agents/destinations
 - Checkpoints/replay and downloadable CSV measurements
 
 ### 0.3 — Claims and parcels

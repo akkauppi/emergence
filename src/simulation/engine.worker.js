@@ -44,6 +44,7 @@ function initialize(config, revision = 0) {
   configuration = {
     ...config,
     params: { ...config.params },
+    environment: config.environment ?? null,
   };
   tempo = Math.max(0.05, Math.min(8, Number(config.tempo) || 1));
   behavior = compileBehavior(config.source);
@@ -56,6 +57,7 @@ function initialize(config, revision = 0) {
     height: config.height,
     params: config.params,
     relationMode: config.relationMode,
+    environment: config.environment ?? null,
   });
   setRunning(false);
   emit("compileResult", { ok: true, initial: true });
@@ -101,6 +103,7 @@ self.addEventListener("message", (event) => {
           seed: message.seed ?? engine.seed,
           population: message.population ?? engine.population,
           params: { ...(message.params ?? engine.params) },
+          environment: message.environment ?? configuration.environment,
         };
         behavior = compileBehavior(configuration.source);
         engine.setBehavior(behavior, configuration.source);
@@ -108,6 +111,7 @@ self.addEventListener("message", (event) => {
           seed: configuration.seed,
           population: configuration.population,
           params: configuration.params,
+          environment: configuration.environment,
         });
         emitFrame();
         break;
@@ -117,6 +121,7 @@ self.addEventListener("message", (event) => {
           ...configuration,
           population: message.population ?? configuration.population,
           params: { ...(message.params ?? configuration.params) },
+          environment: message.environment ?? configuration.environment,
         };
         setRunning(false);
         behavior = compileBehavior(configuration.source);
@@ -125,6 +130,7 @@ self.addEventListener("message", (event) => {
           seed: engine.seed,
           population: configuration.population,
           params: configuration.params,
+          environment: configuration.environment,
         });
         emitFrame();
         break;
