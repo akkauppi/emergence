@@ -167,8 +167,12 @@ function behave({ self, destination, obstacles, field, params, vec, world }) {
   const forward = vec.unit(vec.subtract(goal, self.position));
 
   let target = goal;
-  const bodyPadding = self.radius + 3;
-  const waypointPadding = self.radius + 10;
+  // Detection looks slightly ahead of the physical body. Route visibility
+  // uses the physical body so a person already touching a wall may leave it.
+  const detectionPadding = self.radius + 3;
+  const initialRoutePadding = Math.max(0, self.radius - 0.1);
+  const routePadding = self.radius + 0.5;
+  const waypointPadding = self.radius + 4;
   let threat = null;
   let threatScore = Infinity;
 
@@ -186,7 +190,7 @@ function behave({ self, destination, obstacles, field, params, vec, world }) {
       self.position,
       goal,
       block,
-      bodyPadding
+      detectionPadding
     );
     const nearby = distance < waypointPadding * 1.35 && ahead > -waypointPadding;
     if (!blocking && !nearby) continue;
@@ -233,8 +237,25 @@ function behave({ self, destination, obstacles, field, params, vec, world }) {
       );
     }
 
-    function clearSegment(from, to) {
-      return !segmentCrossesBlock(from, to, threat, bodyPadding);
+    function clearInitialSegment(to) {
+      // Collision resolution leaves the centre exactly one radius from a
+      // face. Test the first leg against the physical body, with a tiny
+      // tolerance, so an outward/tangential route remains visible at contact
+      // but a route through the block to a far-side corner never does.
+      return !segmentCrossesBlock(
+        self.position,
+        to,
+        threat,
+        initialRoutePadding
+      );
+    }
+
+    function clearSideSegment(from, to) {
+      return !segmentCrossesBlock(from, to, threat, routePadding);
+    }
+
+    function clearsThreat(from, to) {
+      return !segmentCrossesBlock(from, to, threat, routePadding);
     }
 
     // A corner belongs to two sides, so calculate layout clearance once.
@@ -246,12 +267,12 @@ function behave({ self, destination, obstacles, field, params, vec, world }) {
       const second = corners[secondIndex];
       const onCorridor =
         distanceToSegment(self.position, first, second) < waypointPadding &&
-        clearSegment(self.position, second);
+        clearInitialSegment(second);
       const waypoint = onCorridor ? second : first;
       if (
-        !clearSegment(self.position, waypoint) ||
-        (!onCorridor && !clearSegment(first, second)) ||
-        !clearSegment(second, goal)
+        !clearInitialSegment(waypoint) ||
+        (!onCorridor && !clearSideSegment(first, second)) ||
+        !clearsThreat(second, goal)
       ) return null;
 
       const middle = vec.midpoint(first, second);
@@ -290,7 +311,35 @@ function behave({ self, destination, obstacles, field, params, vec, world }) {
         }
       }
     }
-    if (bestRoute) target = bestRoute.waypoint;
+    if (bestRoute) {
+      target = bestRoute.waypoint;
+    } else if (distanceToBlock(self.position, threat) <= routePadding + 0.5) {
+      // A locally sealed or unusually narrow arrangement can invalidate the
+      // full two-corner templates. Never respond by seeking the gate through
+      // the contacted face. Follow one of that face's ends instead, which
+      // gives collision resolution an outward/tangential acceleration and a
+      // chance to re-plan from the next position.
+      const faces = [
+        { distance: Math.abs(self.position.y - threat.y), corners: [0, 1], normal: { x: 0, y: -1 } },
+        { distance: Math.abs(self.position.x - (threat.x + threat.width)), corners: [1, 2], normal: { x: 1, y: 0 } },
+        { distance: Math.abs(self.position.y - (threat.y + threat.height)), corners: [2, 3], normal: { x: 0, y: 1 } },
+        { distance: Math.abs(self.position.x - threat.x), corners: [3, 0], normal: { x: -1, y: 0 } }
+      ].sort((a, b) => a.distance - b.distance);
+      const escapes = faces[0].corners
+        .filter((index) => clearCorners[index] && clearInitialSegment(corners[index]))
+        .map((index, order) => ({
+          waypoint: corners[index],
+          score: vec.distance(self.position, corners[index]) +
+            vec.distance(corners[index], goal) -
+            field.sample(corners[index]) * params.trailInfluence * 120,
+          tieRank: (order + self.id) % 2
+        }))
+        .sort((a, b) => a.score - b.score || a.tieRank - b.tieRank);
+      target = escapes[0]?.waypoint || {
+        x: self.position.x + faces[0].normal.x * (routePadding + 2),
+        y: self.position.y + faces[0].normal.y * (routePadding + 2)
+      };
+    }
   }
 
   return {

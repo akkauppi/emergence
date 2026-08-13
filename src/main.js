@@ -101,7 +101,7 @@ const state = {
   environment: null,
   layoutUndo: [],
   layoutTool: "inspect",
-  layoutSettings: { rows: 3, columns: 4, gap: 24 },
+  layoutSettings: { rows: 3, columns: 4, gap: 36 },
 };
 
 const renderer = new CanvasRenderer(element("world-canvas"), {
@@ -287,7 +287,7 @@ function updateDestination(id, patch, message) {
   commitLayout(environment, message);
 }
 
-function commitLayout(environment, message) {
+function commitLayout(environment, message, warning = false) {
   state.environment = cloneEnvironment(environment);
   clearInterventionState();
   hideDiagnostic();
@@ -298,7 +298,7 @@ function commitLayout(environment, message) {
     environment: cloneEnvironment(state.environment),
   });
   updateLayoutUi();
-  setLayoutStatus(message);
+  setLayoutStatus(message, warning);
 }
 
 function layoutConflict(blocks, ignoredIds = []) {
@@ -394,9 +394,16 @@ function handleLayoutGesture(detail = {}) {
   rememberLayout();
   const environment = cloneEnvironment(state.environment);
   environment.obstacles = [...(environment.obstacles || []), ...blocks];
-  commitLayout(environment, isGrid
-    ? `Added ${blocks.length} blocks with ${state.layoutSettings.gap}-unit streets.`
-    : "Added one block.");
+  const narrowGrid = isGrid && state.layoutSettings.gap < 36;
+  commitLayout(
+    environment,
+    isGrid
+      ? narrowGrid
+        ? `Added ${blocks.length} blocks · narrow streets may gridlock at this population.`
+        : `Added ${blocks.length} blocks with ${state.layoutSettings.gap}-unit streets.`
+      : "Added one block.",
+    narrowGrid,
+  );
 }
 
 function eraseObstacle(id) {

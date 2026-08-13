@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { getScenario, copyParameters } from "../src/scenarios.js";
+import { createBlockGrid } from "../src/layout-tools.js";
 import { compileBehavior } from "../src/simulation/compiler.js";
 import { SimulationEngine } from "../src/simulation/engine.js";
 
@@ -58,6 +59,46 @@ function assertSafeAgents(engine, obstacles, tick) {
   }
 }
 
+function behaviorTarget({
+  position,
+  goal,
+  obstacle,
+  radius = 7,
+  id = 0,
+  fieldSample = () => 0,
+  trailInfluence = 0,
+}) {
+  const behavior = compileBehavior(scenario.source);
+  let target = null;
+  const vec = {
+    subtract: (first, second) => ({ x: first.x - second.x, y: first.y - second.y }),
+    unit: (vector) => {
+      const length = Math.hypot(vector.x, vector.y) || 1;
+      return { x: vector.x / length, y: vector.y / length };
+    },
+    dot: (first, second) => first.x * second.x + first.y * second.y,
+    distance: (first, second) => Math.hypot(first.x - second.x, first.y - second.y),
+    midpoint: (first, second) => ({
+      x: (first.x + second.x) / 2,
+      y: (first.y + second.y) / 2,
+    }),
+    seek: (_self, nextTarget) => {
+      target = nextTarget;
+      return { x: 0, y: 0 };
+    },
+  };
+  behavior({
+    self: { id, position, velocity: { x: 0, y: 0 }, radius },
+    destination: { id: "goal", ...goal },
+    obstacles: [obstacle],
+    field: { sample: fieldSample },
+    params: { ...copyParameters(scenario), trailInfluence },
+    vec,
+    world: { width: 1_000, height: 650 },
+  });
+  return target;
+}
+
 test("desire-path rule completes safe journeys through editable block layouts", () => {
   assert.equal(scenario.editableLayout, true);
   for (const [name, obstacles] of Object.entries(layouts)) {
@@ -70,6 +111,85 @@ test("trail influence remains an observable control comparison", () => {
   const control = runLayout(layouts["central block"], 0);
   const feedback = runLayout(layouts["central block"], 1);
   assert.ok(feedback.trailConcentration > control.trailConcentration + 0.05);
+});
+
+test("a walker touching any perpendicular face receives an outward route", () => {
+  const obstacle = { id: "block", x: 380, y: 240, width: 160, height: 120 };
+  const radius = 7;
+  const cases = [
+    { position: { x: obstacle.x - radius, y: 300 }, goal: { x: 800, y: 300 }, normal: { x: -1, y: 0 } },
+    { position: { x: obstacle.x + obstacle.width + radius, y: 300 }, goal: { x: 200, y: 300 }, normal: { x: 1, y: 0 } },
+    { position: { x: 460, y: obstacle.y - radius }, goal: { x: 460, y: 540 }, normal: { x: 0, y: -1 } },
+    { position: { x: 460, y: obstacle.y + obstacle.height + radius }, goal: { x: 460, y: 80 }, normal: { x: 0, y: 1 } },
+  ];
+
+  for (const offset of [0, 1, 2.9]) {
+    for (const sample of cases) {
+      const position = {
+        x: sample.position.x + sample.normal.x * offset,
+        y: sample.position.y + sample.normal.y * offset,
+      };
+      const farSideTrace = (point) => {
+        const outwardDistance =
+          (point.x - position.x) * sample.normal.x +
+          (point.y - position.y) * sample.normal.y;
+        return outwardDistance < -20 ? 1 : 0;
+      };
+      for (const condition of [
+        { fieldSample: () => 0, trailInfluence: 0 },
+        { fieldSample: farSideTrace, trailInfluence: 2 },
+      ]) {
+        const target = behaviorTarget({
+          position,
+          goal: sample.goal,
+          obstacle,
+          radius,
+          ...condition,
+        });
+        const outwardProgress =
+          (target.x - position.x) * sample.normal.x +
+          (target.y - position.y) * sample.normal.y;
+        assert.ok(outwardProgress >= -1e-9, JSON.stringify({ position, target, sample, condition }));
+        assert.notDeepEqual(target, sample.goal);
+      }
+    }
+  }
+});
+
+test("orthogonal grids remain traversable at narrow and classroom street widths", () => {
+  const cases = [
+    { gap: 24, population: 3, ticks: 900, bounds: { x: 320, y: 190, width: 360, height: 270 } },
+    { gap: 36, population: 36, ticks: 1_200, bounds: { x: 300, y: 175, width: 400, height: 300 } },
+  ];
+
+  for (const definition of cases) {
+    const obstacles = createBlockGrid(definition.bounds, {
+      rows: 3,
+      columns: 4,
+      gap: definition.gap,
+      idPrefix: `grid-${definition.gap}`,
+    });
+    const engine = new SimulationEngine({
+      behavior: compileBehavior(scenario.source),
+      ruleKey: scenario.source,
+      seed: 2026,
+      population: definition.population,
+      width: 1_000,
+      height: 650,
+      params: { ...copyParameters(scenario), trailInfluence: 0 },
+      relationMode: scenario.relationMode,
+      environment: { ...scenario.environment, obstacles },
+    });
+
+    for (let tick = 0; tick < definition.ticks; tick += 1) {
+      assert.equal(engine.step().ok, true);
+      assertSafeAgents(engine, obstacles, tick);
+    }
+    assert.ok(
+      engine.agents.every((agent) => agent.arrivalCount >= 1),
+      `${definition.gap}-unit grid left ${engine.agents.filter((agent) => agent.arrivalCount < 1).length} walkers pinned`,
+    );
+  }
 });
 
 test("desire paths complete vertical and diagonal trips among weighted gates", () => {

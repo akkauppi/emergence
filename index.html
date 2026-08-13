@@ -101,7 +101,16 @@
               <label for="layout-grid-columns">Columns</label>
               <input id="layout-grid-columns" type="number" inputmode="numeric" min="2" max="8" step="1" value="4" />
               <label for="layout-grid-gap">Street gap</label>
-              <input id="layout-grid-gap" type="number" inputmode="numeric" min="6" max="60" step="2" value="24" />
+              <input
+                id="layout-grid-gap"
+                type="number"
+                inputmode="numeric"
+                min="6"
+                max="60"
+                step="2"
+                value="36"
+                title="36 units leaves room for two-way movement; narrower streets may intentionally create congestion"
+              />
             </fieldset>
 
             <div class="layout-history-controls" aria-label="Layout history">

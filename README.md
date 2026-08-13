@@ -59,8 +59,10 @@ concentration and its trend replace rule-match measurement in this preset.
 
 To edit the walking ground, pause the run and choose **Block** to drag one rectangle or
 **Block grid** to drag a whole arrangement; its rows, columns, and street gap can be set
-beside the tools. Choose **Gate** to click or drag a new destination, then edit its label
-and **Likelihood** from `0` to `10`. Relative likelihoods weight the next destination;
+beside the tools. The 36-unit default gap leaves room for opposing walkers; deliberately
+narrower streets can produce congestion and gridlock. Choose **Gate** to click or drag a
+new destination, then edit its label and **Likelihood** from `0` to `10`. Relative
+likelihoods weight the next destination;
 the gate an agent just left is excluded. A zero excludes that gate while another choice
 has positive weight, while all eligible zeros fall back to equal choice. **Erase**
 removes a block or gate, while **Undo**, **Clear**, and **Restore layout** make quick
