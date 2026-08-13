@@ -116,5 +116,9 @@ export function stateChecksum(agents, tick = 0, hiddenState = {}) {
     checksum = hashCanonicalValue(checksum, hiddenState.field);
   }
 
+  if (hiddenState.land !== undefined) {
+    checksum = hashCanonicalValue(checksum, hiddenState.land);
+  }
+
   return checksum.toString(16).padStart(8, "0");
 }

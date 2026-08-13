@@ -6,6 +6,7 @@ import {
   pointInCircle,
   pointInRect,
 } from "./layout-tools.js";
+import { drawTerritory, landCellAtPoint, resolveLandGrid } from "./territory-renderer.js";
 
 const COLORS = {
   background: "#142137",
@@ -148,6 +149,7 @@ export class CanvasRenderer {
     onEnvironmentErase,
     onObstacleErase,
     onDestinationErase,
+    onLandSelect,
   } = {}) {
     this.canvas = canvas;
     this.context = canvas.getContext("2d", { alpha: false });
@@ -159,11 +161,14 @@ export class CanvasRenderer {
     this.onEnvironmentErase = onEnvironmentErase;
     this.onObstacleErase = onObstacleErase;
     this.onDestinationErase = onDestinationErase;
+    this.onLandSelect = onLandSelect;
     this.frame = null;
     this.lastTick = -1;
     this.lastSeed = null;
     this.lastEventCursor = 0;
     this.selectedId = 0;
+    this.selectedLandId = null;
+    this.landVisible = true;
     this.trailsEnabled = true;
     this.relationsEnabled = true;
     this.relationMode = "midpoint";
@@ -228,6 +233,16 @@ export class CanvasRenderer {
     this.draw();
   }
 
+  setSelectedLand(id) {
+    this.selectedLandId = id ?? null;
+    this.draw();
+  }
+
+  setLandVisible(enabled) {
+    this.landVisible = Boolean(enabled);
+    this.draw();
+  }
+
   setTrails(enabled) {
     this.trailsEnabled = enabled;
     if (!enabled) this.trails.clear();
@@ -270,6 +285,11 @@ export class CanvasRenderer {
     this.lastSeed = frame.seed;
     this.lastEventCursor = frame.eventCursor || 0;
     if (!frame.agents.some((agent) => agent.id === this.selectedId)) this.selectedId = 0;
+    const land = resolveLandGrid(frame);
+    if (
+      this.selectedLandId !== null
+      && (!land || !land.cells.some((cell) => String(cell.id) === String(this.selectedLandId)))
+    ) this.selectedLandId = null;
     this.draw();
   }
 
@@ -326,6 +346,12 @@ export class CanvasRenderer {
     context.scale(this.viewport.scale, this.viewport.scale);
     this.#drawScalarField(context);
     this.#drawGrid(context);
+    if (this.landVisible) {
+      drawTerritory(context, this.frame, {
+        scale: this.viewport.scale,
+        selectedLandId: this.selectedLandId,
+      });
+    }
     this.#drawEnvironment(context);
     this.#drawTrails(context);
     if (this.relationsEnabled) this.#drawRelations(context);
@@ -945,6 +971,10 @@ export class CanvasRenderer {
     return null;
   }
 
+  #hitTestLand(point) {
+    return this.landVisible ? landCellAtPoint(this.frame, point) : null;
+  }
+
   #handlePointerDown(event) {
     if (!this.frame || this.pendingPerturbation || (event.pointerType === "mouse" && event.button !== 0)) return;
 
@@ -980,22 +1010,31 @@ export class CanvasRenderer {
 
     const point = this.#eventPoint(event);
     const agent = this.#hitTest(point);
-    if (!agent) return;
+    if (agent) {
+      event.preventDefault();
+      this.selectedId = agent.id;
+      this.onSelect?.(agent.id);
+      this.drag = {
+        kind: "agent",
+        pointerId: event.pointerId,
+        agentId: agent.id,
+        startClientX: event.clientX,
+        startClientY: event.clientY,
+        position: { x: agent.x, y: agent.y },
+        active: false,
+      };
+      this.#capturePointer(event.pointerId);
+      this.canvas.style.cursor = "grabbing";
+      this.draw();
+      return;
+    }
 
+    const landCell = this.#hitTestLand(point);
+    if (!landCell) return;
     event.preventDefault();
-    this.selectedId = agent.id;
-    this.onSelect?.(agent.id);
-    this.drag = {
-      kind: "agent",
-      pointerId: event.pointerId,
-      agentId: agent.id,
-      startClientX: event.clientX,
-      startClientY: event.clientY,
-      position: { x: agent.x, y: agent.y },
-      active: false,
-    };
-    this.#capturePointer(event.pointerId);
-    this.canvas.style.cursor = "grabbing";
+    this.selectedLandId = landCell.id;
+    this.onLandSelect?.(landCell.id, landCell);
+    this.canvas.style.cursor = "pointer";
     this.draw();
   }
 
@@ -1013,8 +1052,9 @@ export class CanvasRenderer {
         if (previous?.type !== this.hoveredEraseTarget?.type || previous?.id !== this.hoveredEraseTarget?.id) this.draw();
         return;
       }
-      const hovered = this.#hitTest(this.#eventPoint(event));
-      this.canvas.style.cursor = hovered ? "grab" : "default";
+      const point = this.#eventPoint(event);
+      const hovered = this.#hitTest(point);
+      this.canvas.style.cursor = hovered ? "grab" : this.#hitTestLand(point) ? "pointer" : "default";
       return;
     }
 

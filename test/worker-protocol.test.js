@@ -98,3 +98,113 @@ test("journey behavior receives its environment after worker reset", () => {
   assert.equal(stepMessages.at(-1).frame.tick, 2);
   assert.equal(Number.isFinite(stepMessages.at(-1).frame.metrics.trailConcentration), true);
 });
+
+test("territory worlds mature claims, reset cleanly, and replay under worker revisions", () => {
+  const scenario = getScenario("territory-growth");
+  const beforeInitialize = messages.length;
+  send({
+    type: "initialize",
+    worldRevision: 5,
+    config: {
+      source: scenario.source,
+      seed: 2026,
+      population: 12,
+      width: 1_000,
+      height: 650,
+      params: copyParameters(scenario),
+      relationMode: scenario.relationMode,
+      environment: scenario.environment,
+      tempo: 1,
+    },
+  });
+  const initializeMessages = messages.slice(beforeInitialize);
+
+  assert.deepEqual(
+    initializeMessages.map((message) => message.type),
+    ["status", "compileResult", "frame", "ready"],
+  );
+  assert.ok(initializeMessages.every((message) => message.worldRevision === 5));
+  const initialFrame = initializeMessages.find((message) => message.type === "frame").frame;
+  assert.equal(initialFrame.tick, 0);
+  assert.equal(initialFrame.land.enabled, true);
+  assert.deepEqual(
+    {
+      x: initialFrame.land.geometry.x,
+      y: initialFrame.land.geometry.y,
+      columns: initialFrame.land.geometry.columns,
+      rows: initialFrame.land.geometry.rows,
+      cellSize: initialFrame.land.geometry.cellSize,
+      gap: initialFrame.land.geometry.gap,
+    },
+    { x: 140, y: 84, columns: 19, rows: 12, cellSize: 36, gap: 2 },
+  );
+  assert.deepEqual(initialFrame.land.policy, scenario.environment.land.policy);
+  assert.equal(initialFrame.land.cells.length, 19 * 12);
+  assert.ok(initialFrame.land.cells.every((cell) => cell.state === "unclaimed"));
+  assert.ok(initialFrame.land.cells.every((cell) => Number.isFinite(cell.access)));
+  assert.deepEqual(initialFrame.land.events, []);
+  assert.equal(initialFrame.metrics.claimedCells, 0);
+  assert.equal(initialFrame.metrics.landConflicts, 0);
+
+  const beforeWaiting = messages.length;
+  send({ type: "step", worldRevision: 5, count: 19 });
+  const waitingMessages = messages.slice(beforeWaiting);
+  assert.equal(waitingMessages.some((message) => message.type === "runtimeError"), false);
+  const waitingFrame = waitingMessages.at(-1).frame;
+  assert.equal(waitingFrame.tick, 19);
+  assert.equal(waitingFrame.metrics.claimedCells, 0);
+  assert.ok(waitingFrame.metrics.reservedCells > 0);
+  assert.ok(waitingFrame.metrics.landConflicts > 0);
+  assert.ok(waitingFrame.land.cells.some((cell) => cell.state === "reserved"));
+
+  const beforeMaturity = messages.length;
+  send({ type: "step", worldRevision: 5, count: 1 });
+  const maturityMessages = messages.slice(beforeMaturity);
+  assert.equal(maturityMessages.some((message) => message.type === "runtimeError"), false);
+  const matureFrame = maturityMessages.at(-1).frame;
+  assert.equal(matureFrame.tick, 20);
+  assert.ok(matureFrame.metrics.claimedCells > 0);
+  assert.ok(matureFrame.metrics.landClaims > 0);
+  assert.ok(matureFrame.metrics.landConflicts > 0);
+  assert.ok(matureFrame.land.events.some((event) => event.type === "claim"));
+  assert.ok(matureFrame.land.cells.some((cell) => cell.state === "claimed"));
+  assert.ok(matureFrame.land.parcels.length > 0);
+
+  const beforeReset = messages.length;
+  send({
+    type: "reset",
+    worldRevision: 6,
+    seed: 2026,
+    population: 12,
+    params: copyParameters(scenario),
+    environment: scenario.environment,
+  });
+  const resetMessages = messages.slice(beforeReset);
+  assert.ok(resetMessages.every((message) => message.worldRevision === 6));
+  const resetFrame = resetMessages.at(-1).frame;
+  assert.equal(resetFrame.tick, 0);
+  assert.equal(resetFrame.checksum, initialFrame.checksum);
+  assert.equal(resetFrame.land.cells.length, initialFrame.land.cells.length);
+  assert.ok(resetFrame.land.cells.every((cell) => cell.state === "unclaimed"));
+  assert.deepEqual(resetFrame.land.parcels, []);
+  assert.deepEqual(resetFrame.land.events, []);
+  assert.equal(resetFrame.metrics.claimedCells, 0);
+  assert.equal(resetFrame.metrics.reservedCells, 0);
+  assert.equal(resetFrame.metrics.landClaims, 0);
+  assert.equal(resetFrame.metrics.landConflicts, 0);
+
+  const beforeStaleControls = messages.length;
+  send({ type: "play", worldRevision: 5 });
+  send({ type: "step", worldRevision: 5, count: 1 });
+  assert.equal(messages.length, beforeStaleControls);
+
+  const beforeReplay = messages.length;
+  send({ type: "step", worldRevision: 6, count: 20 });
+  const replayMessages = messages.slice(beforeReplay);
+  assert.equal(replayMessages.some((message) => message.type === "runtimeError"), false);
+  const replayFrame = replayMessages.at(-1).frame;
+  assert.equal(replayFrame.tick, 20);
+  assert.equal(replayFrame.checksum, matureFrame.checksum);
+  assert.deepEqual(replayFrame.land.metrics, matureFrame.land.metrics);
+  assert.deepEqual(replayFrame.land.events, matureFrame.land.events);
+});

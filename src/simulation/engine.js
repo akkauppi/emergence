@@ -1,6 +1,7 @@
 import { keyedRandom, randomInteger, stateChecksum } from "./prng.js";
 import { clampWorldPoint, equilateralApex, nearestEquilateralApex } from "./geometry.js";
 import { ScalarField } from "./scalar-field.js";
+import { LandGridState, normalizeLandConfig, parseLandIntent } from "./land-grid.js";
 
 const DEFAULT_WIDTH = 1_000;
 const DEFAULT_HEIGHT = 650;
@@ -91,7 +92,9 @@ function normalizeEnvironment(environment, worldWidth, worldHeight) {
     })
     : null;
 
-  return Object.freeze({ destinations, obstacles, journeys, field });
+  const land = normalizeLandConfig(environment.land, worldWidth, worldHeight);
+
+  return Object.freeze({ destinations, obstacles, journeys, field, land });
 }
 
 function resolveCircleAgainstRectangle(position, velocity, radius, rectangle) {
@@ -215,6 +218,9 @@ export class SimulationEngine {
     this.ruleKey = String(ruleKey);
     this.environment = normalizeEnvironment(environment, this.width, this.height);
     this.field = this.environment?.field ? new ScalarField(this.width, this.height, this.environment.field) : null;
+    this.land = this.environment?.land
+      ? new LandGridState(this.environment.land, { seed: this.seed, worldWidth: this.width, worldHeight: this.height })
+      : null;
     this.trips = 0;
     this.tick = 0;
     this.lastError = null;
@@ -236,6 +242,9 @@ export class SimulationEngine {
     this.params = { ...params };
     this.environment = normalizeEnvironment(environment, this.width, this.height);
     this.field = this.environment?.field ? new ScalarField(this.width, this.height, this.environment.field) : null;
+    this.land = this.environment?.land
+      ? new LandGridState(this.environment.land, { seed: this.seed, worldWidth: this.width, worldHeight: this.height })
+      : null;
     this.trips = 0;
     this.tick = 0;
     this.lastError = null;
@@ -534,6 +543,7 @@ export class SimulationEngine {
       gradient: () => frozenVector(0, 0),
     });
     const intents = [];
+    const landIntents = [];
     const neighborCache = new WeakMap();
     const observationCache = new WeakMap();
 
@@ -567,6 +577,7 @@ export class SimulationEngine {
         destinations,
         obstacles,
         field: fieldApi,
+        land: this.land?.viewFor(agent.id, this.tick) || null,
         tick: this.tick,
         sense: observation,
         random: (key = "default") => keyedRandom(this.seed, this.tick, agent.id, key),
@@ -599,6 +610,19 @@ export class SimulationEngine {
         return { ok: false, error: this.lastError };
       }
 
+      const parsedLandIntent = parseLandIntent(decision);
+      if (!parsedLandIntent.ok) {
+        this.lastError = {
+          tick: this.tick,
+          agentId: agent.id,
+          message: parsedLandIntent.error,
+        };
+        return { ok: false, error: this.lastError };
+      }
+      if (parsedLandIntent.intent) {
+        landIntents.push(Object.freeze({ agentId: agent.id, ...parsedLandIntent.intent }));
+      }
+
       const separation = this.#separationAcceleration(index, views);
       intents.push(
         limitVector(
@@ -609,6 +633,15 @@ export class SimulationEngine {
           maxAcceleration,
         ),
       );
+    }
+
+    const landTransition = this.land?.stage(landIntents, this.tick) || null;
+    if (landTransition && !landTransition.ok) {
+      this.lastError = {
+        tick: this.tick,
+        message: landTransition.error || "Land intents could not be resolved.",
+      };
+      return { ok: false, error: this.lastError };
     }
 
     const damping = Math.exp(-0.18 * this.dt);
@@ -672,6 +705,7 @@ export class SimulationEngine {
         diffusion: this.environment.field.diffusion,
       });
     }
+    if (landTransition) this.land.commit(landTransition);
     this.tick += 1;
     this.#recordObservation();
     this.lastError = null;
@@ -719,6 +753,17 @@ export class SimulationEngine {
 
   metrics() {
     const count = this.agents.length;
+    const landMetrics = this.land?.metrics() || {
+      claimedCells: 0,
+      reservedCells: 0,
+      claimedShare: 0,
+      landConflicts: 0,
+      landOwners: 0,
+      parcelCount: 0,
+      meanParcelArea: 0,
+      meanParcelCompactness: 0,
+      ownershipConcentration: 0,
+    };
     if (count === 0) {
       return {
         spread: 0,
@@ -728,6 +773,7 @@ export class SimulationEngine {
         trailConcentration: 0,
         totalFootfall: 0,
         trips: this.trips,
+        ...landMetrics,
       };
     }
 
@@ -759,6 +805,7 @@ export class SimulationEngine {
       trailConcentration: fieldMetrics.concentration,
       totalFootfall: fieldMetrics.total,
       trips: this.trips,
+      ...landMetrics,
     };
   }
 
@@ -829,6 +876,7 @@ export class SimulationEngine {
     const delayedObservation = this.#observationAt(configuredDelayTicks);
     const observationAge = this.tick - delayedObservation.tick;
     const fieldFrame = this.field?.frame() || null;
+    const landFrame = this.land?.frame(this.tick) || null;
     const environmentFrame = this.environment ? {
       destinations: this.environment.destinations,
       obstacles: this.environment.obstacles,
@@ -861,6 +909,7 @@ export class SimulationEngine {
           arrivalCounts: this.agents.map((agent) => agent.arrivalCount),
         } : undefined,
         field: this.field?.values,
+        land: this.land?.checksumState(),
       }),
       eventCursor: this.eventCursor,
       lastIntervention: this.interventions.at(-1) || null,
@@ -876,6 +925,7 @@ export class SimulationEngine {
       metrics: this.metrics(),
       environment: environmentFrame,
       field: fieldFrame,
+      land: landFrame,
       agents: this.agents.map((agent) => ({
         id: agent.id,
         x: agent.x,

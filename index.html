@@ -58,7 +58,11 @@
         </div>
 
         <div class="canvas-shell" id="canvas-shell">
-          <canvas id="world-canvas" aria-label="Agent simulation playground"></canvas>
+          <canvas
+            id="world-canvas"
+            aria-label="Agent simulation playground"
+            aria-describedby="canvas-instruction canvas-description"
+          ></canvas>
           <div class="canvas-topline" aria-hidden="true">
             <span class="status-pill" id="canvas-status"><i></i> Paused</span>
             <span class="canvas-badges">
@@ -69,10 +73,11 @@
           <p class="canvas-instruction" id="canvas-instruction">
             Click a person to inspect · drag a person to perturb the group.
           </p>
-          <div class="canvas-legend" id="canvas-legend" aria-hidden="true">
-            <span><i class="legend-self"></i> selected</span>
-            <span id="legend-a-item"><i class="legend-a"></i><span id="legend-a-label">person A</span></span>
-            <span id="legend-b-item"><i class="legend-b"></i><span id="legend-b-label">person B</span></span>
+          <div class="canvas-legend" id="canvas-legend" aria-label="Map legend">
+            <span id="legend-self-item"><i class="legend-self" aria-hidden="true"></i><span id="legend-self-label">selected</span></span>
+            <span id="legend-a-item"><i class="legend-a" aria-hidden="true"></i><span id="legend-a-label">person A</span></span>
+            <span id="legend-b-item"><i class="legend-b" aria-hidden="true"></i><span id="legend-b-label">person B</span></span>
+            <span id="legend-c-item" hidden><i class="legend-c" aria-hidden="true"></i><span id="legend-c-label">conflict</span></span>
           </div>
         </div>
 
@@ -133,6 +138,31 @@
           Simulation paused at tick 0.
         </p>
 
+        <section class="territory-inspector" id="territory-inspector" aria-labelledby="territory-inspector-title" hidden>
+          <div class="territory-inspector-heading">
+            <div>
+              <p class="eyebrow" id="territory-inspector-title">Inspect the tenure layer</p>
+              <span>Geometry stays fixed while reservations and ownership change.</span>
+            </div>
+            <label for="territory-parcel-select">
+              Parcel or reservation
+              <select id="territory-parcel-select">
+                <option value="">Choose on the map</option>
+              </select>
+            </label>
+          </div>
+          <dl class="territory-facts">
+            <div><dt>Cell</dt><dd id="territory-cell-value">—</dd></div>
+            <div><dt>Tenure</dt><dd id="territory-tenure-value">Unclaimed</dd></div>
+            <div><dt>Holder</dt><dd id="territory-holder-value">—</dd></div>
+            <div><dt>Timing</dt><dd id="territory-timing-value">—</dd></div>
+            <div><dt>Parcel area</dt><dd id="territory-area-value">—</dd></div>
+            <div><dt>Compactness</dt><dd id="territory-compactness-value">—</dd></div>
+            <div><dt>Frontage</dt><dd id="territory-frontage-value">—</dd></div>
+          </dl>
+          <p class="territory-policy" id="territory-policy">One reservation per person · highest priority wins · seeded tie-breaks.</p>
+        </section>
+
         <div class="metrics-strip" aria-label="Live simulation measurements">
           <article class="metric">
             <span id="primary-metric-label">Group spread</span>
@@ -182,19 +212,24 @@
           </div>
 
           <div class="control-field population-field">
-            <label for="population-input">People <output id="population-value">72</output></label>
+            <label for="population-input"><span id="population-label">People</span> <output id="population-value">72</output></label>
             <input id="population-input" type="range" min="12" max="180" step="6" value="72" />
           </div>
 
-          <label class="toggle-control">
+          <label class="toggle-control" id="trails-control">
             <input id="trails-toggle" type="checkbox" checked />
             <span aria-hidden="true"></span>
             Trails
           </label>
-          <label class="toggle-control">
+          <label class="toggle-control" id="relations-control">
             <input id="relations-toggle" type="checkbox" checked />
             <span aria-hidden="true"></span>
             Relations
+          </label>
+          <label class="toggle-control" id="land-control" hidden>
+            <input id="land-toggle" type="checkbox" checked />
+            <span aria-hidden="true"></span>
+            Tenure
           </label>
         </div>
 
@@ -262,6 +297,10 @@
               <div><dt><code>obstacles</code></dt><dd>read-only rectangles in the world</dd></div>
               <div><dt><code>field.sample(point)</code></dt><dd>footfall strength at a point</dd></div>
               <div><dt><code>field.gradient(point, step)</code></dt><dd>direction of rising footfall</dd></div>
+              <div><dt><code>land.cells</code></dt><dd>frozen sites and current tenure</dd></div>
+              <div><dt><code>land.mine</code></dt><dd>land IDs already owned by this person</dd></div>
+              <div><dt><code>reserveLand</code></dt><dd>submit one site and priority for arbitration</dd></div>
+              <div><dt><code>claimLand</code></dt><dd>claim a mature reservation</dd></div>
             </dl>
             <p class="trust-note">Prototype note: run only code you trust. The worker protects the interface from accidental loops, but it is not a security sandbox.</p>
           </div>
@@ -293,10 +332,10 @@
             <div><strong>Interaction laboratory</strong><p>Destinations, obstacles, fields and the first live desire-path experiment.</p></div>
             <em>Now</em>
           </li>
-          <li>
+          <li class="is-current">
             <span>03</span>
             <div><strong>Territory laboratory</strong><p>Land reservations, competing claims, parcels, access and conflict resolution.</p></div>
-            <em>Later</em>
+            <em>Now</em>
           </li>
           <li>
             <span>04</span>

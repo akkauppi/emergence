@@ -289,3 +289,76 @@ test("inspect mode preserves agent selection and does not emit layout gestures",
     harness.restore();
   }
 });
+
+test("inspect mode selects land cells while giving overlapping agents precedence", () => {
+  const selectedAgents = [];
+  const selectedLand = [];
+  const harness = createRendererHarness({
+    onSelect: (id) => selectedAgents.push(id),
+    onLandSelect: (id, cell) => selectedLand.push({ id, state: cell.state }),
+  });
+  try {
+    harness.renderer.update({
+      width: 1_000,
+      height: 650,
+      tick: 1,
+      seed: 1,
+      eventCursor: 0,
+      agents: [{ id: 0, x: 100, y: 100, vx: 0, vy: 0, angle: 0, radius: 7, chosen: [] }],
+      environment: { obstacles: [], destinations: [] },
+      land: {
+        geometry: { x: 80, y: 80, cellSize: 40, columns: 4, rows: 1 },
+        cells: [
+          { id: "a", row: 0, column: 0, state: "unclaimed" },
+          { id: "b", row: 0, column: 1, state: "reserved", reservedBy: 2 },
+          { id: "c", row: 0, column: 2, state: "claimed", ownerId: 3 },
+          { id: "d", row: 0, column: 3, state: "unclaimed" },
+        ],
+      },
+    });
+
+    harness.dispatch("pointerdown", { clientX: 108, clientY: 108 });
+    harness.dispatch("pointerup", { clientX: 108, clientY: 108 });
+    assert.deepEqual(selectedAgents, [0]);
+    assert.deepEqual(selectedLand, []);
+
+    harness.dispatch("pointermove", { pointerId: 2, clientX: 198, clientY: 108 });
+    assert.equal(harness.canvas.style.cursor, "pointer");
+    harness.dispatch("pointerdown", { pointerId: 2, clientX: 198, clientY: 108 });
+    assert.deepEqual(selectedLand, [{ id: "c", state: "claimed" }]);
+    assert.equal(harness.renderer.selectedLandId, "c");
+
+    harness.renderer.setSelectedLand("b");
+    assert.equal(harness.renderer.selectedLandId, "b");
+    harness.renderer.setSelectedLand(null);
+    assert.equal(harness.renderer.selectedLandId, null);
+
+    harness.renderer.setLandVisible(false);
+    harness.dispatch("pointerdown", { pointerId: 3, clientX: 238, clientY: 108 });
+    assert.deepEqual(selectedLand, [{ id: "c", state: "claimed" }]);
+    harness.renderer.setLandVisible(true);
+  } finally {
+    harness.restore();
+  }
+});
+
+test("malformed land frames do not add an inspect target", () => {
+  const selectedLand = [];
+  const harness = createRendererHarness({ onLandSelect: (id) => selectedLand.push(id) });
+  try {
+    assert.doesNotThrow(() => harness.renderer.update({
+      width: 1_000,
+      height: 650,
+      tick: 1,
+      seed: 1,
+      eventCursor: 0,
+      agents: [],
+      environment: { obstacles: [], destinations: [] },
+      land: { geometry: { x: 0, y: 0, cellSize: -2, columns: 20, rows: 20 }, cells: [] },
+    }));
+    harness.dispatch("pointerdown", { clientX: 200, clientY: 200 });
+    assert.deepEqual(selectedLand, []);
+  } finally {
+    harness.restore();
+  }
+});

@@ -347,6 +347,168 @@ function behave({ self, destination, obstacles, field, params, vec, world }) {
   };
 }`;
 
+const territoryGrowthSource = `function finite(value, fallback = 0) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+function attribute(cell, key, fallback = 0) {
+  const attributes = cell.attributes || cell.suitability || {};
+  return finite(cell[key] ?? attributes[key], fallback);
+}
+
+function centreOf(cell) {
+  const width = finite(cell.width ?? cell.size?.width ?? cell.cellSize, 0);
+  const height = finite(cell.height ?? cell.size?.height ?? cell.cellSize, 0);
+  return {
+    x: finite(cell.center?.x ?? cell.position?.x, finite(cell.x) + width / 2),
+    y: finite(cell.center?.y ?? cell.position?.y, finite(cell.y) + height / 2)
+  };
+}
+
+function idOf(value) {
+  if (value && typeof value === "object") {
+    return String(value.landId ?? value.cellId ?? value.id ?? "");
+  }
+  return value === undefined || value === null ? "" : String(value);
+}
+
+function behave({ self, params, vec, world, tick, land }) {
+  // Territory is optional so the program remains safe while switching
+  // scenarios or while the worker is rebuilding the world.
+  if (!land?.enabled || !Array.isArray(land.cells)) {
+    return { acceleration: { x: 0, y: 0 } };
+  }
+
+  function resolveCell(value) {
+    const id = idOf(value);
+    if (!id) return null;
+    const resolved = typeof land.cell === "function" ? land.cell(id) : null;
+    if (resolved) return resolved;
+    if (value && typeof value === "object") return value;
+    return land.cells.find((cell) => idOf(cell) === id) || null;
+  }
+
+  function steer(cell, action = {}) {
+    if (!cell) return { acceleration: { x: 0, y: 0 }, ...action };
+    return {
+      acceleration: vec.seek(self, centreOf(cell), params.strength),
+      ...action
+    };
+  }
+
+  // Finish the one reservation this owner already holds before evaluating
+  // another site. The engine, not this rule, decides when the waiting period
+  // has elapsed and exposes that as claimable.
+  const reservation = land.reservation || null;
+  if (reservation) {
+    const reservedId = idOf(reservation);
+    const reservedCell = resolveCell(reservedId);
+    const claimableAt = finite(
+      reservation.claimableAtTick ?? reservation.claimableAt,
+      Number.POSITIVE_INFINITY
+    );
+    const claimable = reservation.claimable === true || tick >= claimableAt;
+    if (claimable && reservedId) {
+      return steer(reservedCell, { claimLand: { landId: reservedId } });
+    }
+    return steer(reservedCell);
+  }
+
+  const mineInput = typeof land.mine === "function" ? land.mine() : land.mine;
+  const mine = (Array.isArray(mineInput) ? mineInput : [])
+    .map(resolveCell)
+    .filter(Boolean);
+  const mineIds = new Set(mine.map(idOf));
+
+  function isAvailable(cell) {
+    if (!cell || cell.buildable === false) return false;
+    const owner = cell.ownerId ?? cell.owner ?? cell.claimedBy ??
+      cell.tenure?.ownerId ?? cell.tenure?.owner;
+    const reservedBy = cell.reservedBy ?? cell.reservation?.ownerId ??
+      cell.tenure?.reservation?.ownerId;
+    const state = cell.state ?? cell.tenure?.state;
+    return owner === undefined || owner === null
+      ? (reservedBy === undefined || reservedBy === null) &&
+        state !== "claimed" && state !== "reserved"
+      : false;
+  }
+
+  // Once an owner has land, consider only cardinal neighbours of that parcel.
+  // This makes connected growth an authored choice as well as an engine policy.
+  const candidatesById = new Map();
+  if (mine.length > 0 && typeof land.neighbors === "function") {
+    for (const owned of mine) {
+      for (const neighbour of land.neighbors(idOf(owned)) || []) {
+        const cell = resolveCell(neighbour);
+        if (isAvailable(cell)) candidatesById.set(idOf(cell), cell);
+      }
+    }
+  } else {
+    for (const entry of land.cells) {
+      const cell = resolveCell(entry);
+      if (isAvailable(cell)) candidatesById.set(idOf(cell), cell);
+    }
+  }
+
+  const candidates = [...candidatesById.values()];
+  if (candidates.length === 0) {
+    return { acceleration: { x: 0, y: 0 } };
+  }
+
+  const maximumCost = Math.max(
+    1,
+    ...land.cells.map((entry) => attribute(resolveCell(entry) || {}, "cost", 0))
+  );
+  const worldDiagonal = Math.max(1, Math.hypot(world.width, world.height));
+  let best = null;
+
+  for (const cell of candidates) {
+    const centre = centreOf(cell);
+    const travel = Math.hypot(
+      centre.x - self.position.x,
+      centre.y - self.position.y
+    ) / worldDiagonal;
+    const access = Math.max(0, Math.min(1, attribute(cell, "access")));
+    const amenity = Math.max(0, Math.min(1, attribute(cell, "amenity")));
+    const terrain = Math.max(0, Math.min(1, attribute(cell, "terrain")));
+    const cost = Math.max(0, attribute(cell, "cost")) / maximumCost;
+
+    const neighbours = typeof land.neighbors === "function"
+      ? land.neighbors(idOf(cell)) || []
+      : [];
+    const sharedEdges = neighbours.reduce(
+      (count, neighbour) => count + (mineIds.has(idOf(neighbour)) ? 1 : 0),
+      0
+    );
+    const compactGrowth = neighbours.length > 0
+      ? sharedEdges / neighbours.length
+      : 0;
+
+    const score =
+      access * params.accessWeight +
+      amenity * params.amenityWeight -
+      (cost * 0.75 + terrain * 0.25) * params.costWeight -
+      travel * 1.15 +
+      compactGrowth * params.growthBias;
+    const id = idOf(cell);
+
+    if (
+      !best ||
+      score > best.score + 0.000001 ||
+      (Math.abs(score - best.score) <= 0.000001 && id < best.id)
+    ) {
+      best = { id, cell, score };
+    }
+  }
+
+  if (!best) return { acceleration: { x: 0, y: 0 } };
+  // Bids communicate relative suitability. Exact ties are resolved centrally
+  // using the scenario seed, tick, land ID and agent ID.
+  const bid = Math.max(0.01, Math.round((best.score + 4) * 1_000) / 1_000);
+  return steer(best.cell, { reserveLand: { landId: best.id, bid } });
+}`;
+
 export const scenarios = [
   {
     id: "between",
@@ -570,6 +732,102 @@ export const scenarios = [
       { key: "strength", label: "Response strength", min: 0.4, max: 4, step: 0.1 },
       { key: "maxSpeed", label: "Walking speed", min: 30, max: 150, step: 2 },
       { key: "fieldPersistence", label: "Trace persistence", min: 0.96, max: 0.999, step: 0.001, format: "percent" },
+    ],
+  },
+  {
+    id: "territory-growth",
+    title: "Territory · reserve and grow parcels",
+    shortTitle: "Grow a connected territory",
+    kicker: "Claims emerge from competition",
+    stage: { number: "03", label: "Territory laboratory / 03" },
+    description:
+      "Each person evaluates the same fixed land grid for access, amenities, terrain, price, and travel distance. They submit reservations without changing the map directly; contested sites are settled together, successful reservations must mature before they can be claimed, and later cells must share an edge with the owner's parcel.",
+    steps: [
+      "Score the unclaimed sites",
+      "Submit one reservation bid",
+      "Claim it, then grow edge-to-edge",
+    ],
+    question:
+      "Before running: will accessible land attract one compact centre, several competing territories, or a fragmented edge? Change one preference, reset with the same seed, and compare who wins the contested cells.",
+    relationMode: "none",
+    matchLabel: "claimed land held in compact parcels",
+    summaryMetrics: [
+      { label: "Claimed land", key: "claimedShare", format: "fraction-percent", detail: "buildable cells with an owner" },
+      { label: "Land conflicts", key: "landConflicts", format: "integer", detail: "contested reservation targets" },
+    ],
+    metric: {
+      label: "Parcel compactness",
+      key: "meanParcelCompactness",
+      format: "fraction-percent",
+      fallback: "forming…",
+      detail: "mean edge-connected parcel shape",
+    },
+    trend: {
+      label: "Claimed-land trend",
+      key: "claimedShare",
+      ariaLabel: "Recent share of land claimed",
+      minimumRange: 1,
+      domain: [0, 1],
+    },
+    source: territoryGrowthSource,
+    environment: {
+      land: {
+        enabled: true,
+        origin: { x: 140, y: 84 },
+        columns: 19,
+        rows: 12,
+        cellSize: 36,
+        gap: 2,
+        attributes: {
+          access: {
+            sources: [
+              { id: "west-road", x: 140, y: 311, strength: 1 },
+              { id: "east-road", x: 860, y: 311, strength: 1 },
+              { id: "market-crossing", x: 500, y: 311, strength: 0.72 },
+            ],
+            falloff: 360,
+          },
+          amenity: {
+            sources: [
+              { id: "north-green", x: 500, y: 90, strength: 1 },
+              { id: "south-well", x: 650, y: 535, strength: 0.78 },
+            ],
+            falloff: 245,
+          },
+          terrain: {
+            seed: 2026,
+            variation: 0.38,
+          },
+          cost: {
+            base: 0.18,
+            accessMultiplier: 0.55,
+            amenityMultiplier: 0.25,
+          },
+          frontage: { edges: ["west", "east"] },
+        },
+        policy: {
+          reservationTicks: 18,
+          expiryTicks: 90,
+          requireContiguous: true,
+          maxReservationsPerOwner: 1,
+        },
+      },
+    },
+    params: {
+      accessWeight: 1.4,
+      amenityWeight: 0.9,
+      costWeight: 1.1,
+      growthBias: 1.3,
+      strength: 2.2,
+      maxSpeed: 80,
+    },
+    controls: [
+      { key: "accessWeight", label: "Access preference", min: 0, max: 3, step: 0.1 },
+      { key: "amenityWeight", label: "Amenity preference", min: 0, max: 3, step: 0.1 },
+      { key: "costWeight", label: "Cost sensitivity", min: 0, max: 3, step: 0.1 },
+      { key: "growthBias", label: "Compact growth", min: 0, max: 3, step: 0.1 },
+      { key: "strength", label: "Response strength", min: 0.4, max: 4, step: 0.1 },
+      { key: "maxSpeed", label: "Walking speed", min: 30, max: 150, step: 2 },
     ],
   },
 ].map((scenario) => ({

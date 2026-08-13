@@ -18,10 +18,14 @@ const ui = {
   canvasInstruction: element("canvas-instruction"),
   canvasDelay: element("canvas-delay"),
   canvasLegend: element("canvas-legend"),
+  legendSelfItem: element("legend-self-item"),
+  legendSelfLabel: element("legend-self-label"),
   legendAItem: element("legend-a-item"),
   legendALabel: element("legend-a-label"),
   legendBItem: element("legend-b-item"),
   legendBLabel: element("legend-b-label"),
+  legendCItem: element("legend-c-item"),
+  legendCLabel: element("legend-c-label"),
   canvasDescription: element("canvas-description"),
   layoutEditor: element("layout-editor"),
   layoutStatus: element("layout-status"),
@@ -34,6 +38,16 @@ const ui = {
   layoutUndo: element("layout-undo"),
   layoutClear: element("layout-clear"),
   layoutRestore: element("layout-restore"),
+  territoryInspector: element("territory-inspector"),
+  territoryParcelSelect: element("territory-parcel-select"),
+  territoryCell: element("territory-cell-value"),
+  territoryTenure: element("territory-tenure-value"),
+  territoryHolder: element("territory-holder-value"),
+  territoryTiming: element("territory-timing-value"),
+  territoryArea: element("territory-area-value"),
+  territoryCompactness: element("territory-compactness-value"),
+  territoryFrontage: element("territory-frontage-value"),
+  territoryPolicy: element("territory-policy"),
   play: element("play-button"),
   playIcon: element("play-icon"),
   playLabel: element("play-label"),
@@ -42,8 +56,13 @@ const ui = {
   tempo: element("speed-select"),
   population: element("population-input"),
   populationValue: element("population-value"),
+  populationLabel: element("population-label"),
+  trailsControl: element("trails-control"),
   trails: element("trails-toggle"),
+  relationsControl: element("relations-control"),
   relations: element("relations-toggle"),
+  landControl: element("land-control"),
+  land: element("land-toggle"),
   parameters: element("parameter-controls"),
   spread: element("spread-value"),
   primaryMetricLabel: element("primary-metric-label"),
@@ -102,15 +121,18 @@ const state = {
   layoutUndo: [],
   layoutTool: "inspect",
   layoutSettings: { rows: 3, columns: 4, gap: 36 },
+  selectedLandId: null,
+  territoryOptionsSignature: "",
 };
 
 const renderer = new CanvasRenderer(element("world-canvas"), {
-  onSelect: () => updateCanvasDescription(true),
+  onSelect: handleAgentSelection,
   onDragStart: beginPerturbation,
   onPerturb: submitPerturbation,
   onDragCancel: cancelPerturbation,
   onLayoutGesture: handleLayoutGesture,
   onEnvironmentErase: handleEnvironmentErase,
+  onLandSelect: handleLandSelection,
 });
 
 for (const scenario of scenarios) {
@@ -137,6 +159,135 @@ function cloneEnvironment(environment) {
 
 function editableLayoutAvailable(scenario = state.scenario) {
   return Boolean(scenario.editableLayout);
+}
+
+function territoryAvailable(scenario = state.scenario) {
+  return Boolean(scenario.environment?.land?.enabled);
+}
+
+function frameLand(frame = state.frame) {
+  return frame?.land || frame?.environment?.land || null;
+}
+
+function landCellState(cell) {
+  if (!cell) return "unclaimed";
+  if (cell.state) return cell.state;
+  if (cell.ownerId !== null && cell.ownerId !== undefined) return "claimed";
+  if (cell.reservedBy !== null && cell.reservedBy !== undefined) return "reserved";
+  return "unclaimed";
+}
+
+function selectedLandCell(frame = state.frame) {
+  if (!state.selectedLandId) return null;
+  return frameLand(frame)?.cells?.find((cell) => String(cell.id) === String(state.selectedLandId)) || null;
+}
+
+function parcelForCell(land, cell) {
+  if (!land || !cell) return null;
+  if (cell.parcelId !== null && cell.parcelId !== undefined) {
+    const direct = land.parcels?.find((parcel) => String(parcel.id) === String(cell.parcelId));
+    if (direct) return direct;
+  }
+  return land.parcels?.find((parcel) => parcel.cellIds?.some((id) => String(id) === String(cell.id))) || null;
+}
+
+function landHolder(cell) {
+  const stateName = landCellState(cell);
+  if (stateName === "claimed") return cell.ownerId;
+  if (stateName === "reserved") return cell.reservedBy;
+  return null;
+}
+
+function handleLandSelection(landId) {
+  state.selectedLandId = landId === null || landId === undefined ? null : String(landId);
+  renderer.setSelectedLand?.(state.selectedLandId);
+  renderTerritoryInspector(state.frame);
+  updateCanvasDescription(true);
+}
+
+function handleAgentSelection() {
+  if (territoryAvailable()) {
+    state.selectedLandId = null;
+    renderer.setSelectedLand?.(null);
+    renderTerritoryInspector(state.frame);
+  }
+  updateCanvasDescription(true);
+}
+
+function renderTerritoryOptions(land) {
+  const active = (land?.cells || []).filter(
+    (cell) => landCellState(cell) !== "unclaimed" || String(cell.id) === String(state.selectedLandId),
+  );
+  const signature = active.map((cell) => `${cell.id}:${landCellState(cell)}:${landHolder(cell)}`).join("|");
+  if (signature === state.territoryOptionsSignature) {
+    ui.territoryParcelSelect.value = state.selectedLandId || "";
+    return;
+  }
+
+  state.territoryOptionsSignature = signature;
+  const prompt = document.createElement("option");
+  prompt.value = "";
+  prompt.textContent = active.length === 0 ? "No tenure yet" : "Choose on the map";
+  ui.territoryParcelSelect.replaceChildren(prompt);
+  for (const cell of active) {
+    const option = document.createElement("option");
+    option.value = String(cell.id);
+    const holder = landHolder(cell);
+    const stateLabel = landCellState(cell) === "claimed"
+      ? "Claim"
+      : landCellState(cell) === "reserved"
+        ? "Reservation"
+        : "Available cell";
+    option.textContent = `${stateLabel} ${cell.id}${
+      holder === null ? "" : ` · person ${holder}`
+    }`;
+    ui.territoryParcelSelect.append(option);
+  }
+  ui.territoryParcelSelect.value = state.selectedLandId || "";
+}
+
+function renderTerritoryInspector(frame) {
+  if (!territoryAvailable()) return;
+  const land = frameLand(frame);
+  renderTerritoryOptions(land);
+  const cell = selectedLandCell(frame);
+  const parcel = parcelForCell(land, cell);
+  if (!cell) {
+    ui.territoryCell.textContent = "—";
+    ui.territoryTenure.textContent = "Choose a cell";
+    ui.territoryHolder.textContent = "—";
+    ui.territoryTiming.textContent = "—";
+    ui.territoryArea.textContent = "—";
+    ui.territoryCompactness.textContent = "—";
+    ui.territoryFrontage.textContent = "—";
+  } else {
+    const tenure = landCellState(cell);
+    const holder = landHolder(cell);
+    ui.territoryCell.textContent = String(cell.id);
+    ui.territoryTenure.textContent = `${tenure}${cell.contested ? " · contested" : ""}`;
+    ui.territoryHolder.textContent = holder === null ? "—" : `person ${holder}`;
+    ui.territoryTiming.textContent = tenure === "reserved"
+      ? `claim t${cell.claimableAt ?? "—"} · expires t${cell.expiresAt ?? "—"}`
+      : tenure === "claimed"
+        ? `claimed t${cell.claimedAt ?? "—"}`
+        : "available";
+    ui.territoryArea.textContent = Number.isFinite(parcel?.area) ? `${Math.round(parcel.area)} u²` : "—";
+    ui.territoryCompactness.textContent = Number.isFinite(parcel?.compactness)
+      ? `${Math.round(parcel.compactness * 100)}%`
+      : "—";
+    ui.territoryFrontage.textContent = Number.isFinite(parcel?.frontage)
+      ? `${Math.round(parcel.frontage)} u`
+      : Number.isFinite(cell.frontage)
+        ? `${Math.round(cell.frontage)} u`
+        : "—";
+  }
+
+  const policy = land?.policy || {};
+  const maturity = Number(policy.reservationTicks ?? policy.holdTicks);
+  const expiry = Number(policy.expiryTicks ?? policy.reservationExpiryTicks);
+  ui.territoryPolicy.textContent = `One active reservation per person · highest priority wins · seeded tie-breaks${
+    Number.isFinite(maturity) ? ` · matures after ${maturity} ticks` : ""
+  }${Number.isFinite(expiry) ? ` · expires after ${expiry} ticks` : ""}.`;
 }
 
 function boundedInteger(input, minimum, maximum, fallback) {
@@ -600,6 +751,7 @@ function receiveFrame(frame) {
   }
   renderer.update(frame);
   renderMetrics(frame);
+  renderTerritoryInspector(frame);
   updateCanvasDescription(frame.tick % 15 === 0 || reset);
 }
 
@@ -630,6 +782,8 @@ function formatMetric(value, definition) {
   if (definition.format === "fraction-percent") return `${Math.round(value * 100)}%`;
   if (definition.format === "percent") return `${Math.round(value)}%`;
   if (definition.format === "units") return `${Math.round(value)} u`;
+  if (definition.format === "area") return `${Math.round(value)} u²`;
+  if (definition.format === "decimal-2") return Number(value).toFixed(2);
   return String(Math.round(value));
 }
 
@@ -638,8 +792,9 @@ function drawMetricHistory() {
     ui.metricLine.setAttribute("points", "");
     return;
   }
-  const minimum = Math.min(...state.metricHistory);
-  const maximum = Math.max(...state.metricHistory);
+  const domain = state.scenario.trend.domain;
+  const minimum = Array.isArray(domain) ? Number(domain[0]) : Math.min(...state.metricHistory);
+  const maximum = Array.isArray(domain) ? Number(domain[1]) : Math.max(...state.metricHistory);
   const range = Math.max(state.scenario.trend.minimumRange ?? 8, maximum - minimum);
   const points = state.metricHistory.map((value, index) => {
     const x = 2 + (index / Math.max(1, state.metricHistory.length - 1)) * 128;
@@ -647,6 +802,15 @@ function drawMetricHistory() {
     return `${x.toFixed(1)},${y.toFixed(1)}`;
   });
   ui.metricLine.setAttribute("points", points.join(" "));
+  const first = state.metricHistory[0];
+  const current = state.metricHistory.at(-1);
+  const trendDefinition = [state.scenario.metric, ...state.scenario.summaryMetrics]
+    .find((definition) => definition.key === state.scenario.trend.key)
+    || state.scenario.metric;
+  ui.metricChart.setAttribute(
+    "aria-label",
+    `${state.scenario.trend.ariaLabel}: ${formatMetric(first, trendDefinition)} to ${formatMetric(current, trendDefinition)}.`,
+  );
 }
 
 function formatRuntimeError(error = {}) {
@@ -665,20 +829,33 @@ function updateRunningUi() {
 function updateCanvasDescription(force = false) {
   if (!force || !state.frame) return;
   const selected = state.frame.agents.find((agent) => agent.id === renderer.selectedId);
+  const selectedCell = selectedLandCell(state.frame);
   const selectedDestination = state.frame.environment?.destinations?.find(
     (destination) => destination.id === selected?.destinationId,
   );
-  const selection = selected
-    ? state.scenario.environment?.journeys?.enabled
+  const selection = territoryAvailable() && selectedCell
+    ? ` Selected land cell ${selectedCell.id} is ${landCellState(selectedCell)}${
+      landHolder(selectedCell) === null ? "" : ` by person ${landHolder(selectedCell)}`
+    }.`
+    : selected
+      ? state.scenario.environment?.journeys?.enabled
       ? ` Selected person ${selected.id} is travelling toward ${
         selectedDestination?.label || selected.destinationId || "the opposite destination"
       }.`
-      : ` Selected person ${selected.id} follows people ${selected.chosen[0]} and ${selected.chosen[1]}.`
-    : "";
+        : state.scenario.relationMode !== "none"
+          ? ` Selected person ${selected.id} follows people ${selected.chosen[0]} and ${selected.chosen[1]}.`
+          : ` Selected person ${selected.id}.`
+      : "";
   const configuredDelay = state.frame.configuredDelayTicks ?? state.frame.delayTicks ?? 0;
   const observationAge = state.frame.observationAge ?? state.frame.delayTicks ?? 0;
   const warmup = configuredDelay > observationAge ? `, currently ${observationAge} ticks of history` : "";
-  const scenarioMeasurement = state.scenario.environment?.field?.enabled
+  const scenarioMeasurement = territoryAvailable()
+    ? ` ${formatMetric(state.frame.metrics.claimedShare, { format: "fraction-percent" })} of buildable land claimed; ${
+      state.frame.metrics.reservedCells ?? 0
+    } active reservations; ${state.frame.metrics.landConflicts ?? 0} resolved conflicts; ${
+      state.frame.metrics.landOwners ?? 0
+    } landholders.`
+    : state.scenario.environment?.field?.enabled
     ? ` Trail concentration ${formatMetric(state.frame.metrics.trailConcentration, state.scenario.metric)}; ${
       state.frame.metrics.trips ?? 0
     } completed trips.`
@@ -703,6 +880,8 @@ function updateCanvasInstruction(mode = "default") {
     ui.canvasInstruction.textContent = "Click a block or gate to erase it · at least two gates must remain.";
   } else if (state.perturbed) {
     ui.canvasInstruction.textContent = "Manual perturbation applied · reset to reproduce the seeded run.";
+  } else if (territoryAvailable()) {
+    ui.canvasInstruction.textContent = "Click a person or land cell to inspect · reservations hatch, claims join into parcels.";
   } else {
     ui.canvasInstruction.textContent = "Click a person to inspect · drag a person to perturb the group.";
   }
@@ -818,6 +997,8 @@ function loadScenario(scenario, { preserveSeed = true } = {}) {
   state.environment = cloneEnvironment(scenario.environment);
   state.layoutUndo = [];
   state.layoutTool = "inspect";
+  state.selectedLandId = null;
+  state.territoryOptionsSignature = "";
   state.params = copyParameters(scenario);
   state.source = scenario.source;
   state.appliedSource = scenario.source;
@@ -854,12 +1035,23 @@ function loadScenario(scenario, { preserveSeed = true } = {}) {
   ui.metricChart.setAttribute("aria-label", scenario.trend.ariaLabel);
   const hasJourneys = Boolean(scenario.environment?.journeys?.enabled);
   const hasSocialRelations = scenario.relationMode !== "none";
-  ui.legendAItem.hidden = !hasJourneys && !hasSocialRelations;
-  ui.legendBItem.hidden = !hasJourneys && !hasSocialRelations;
-  ui.legendALabel.textContent = hasJourneys ? "destination" : "person A";
-  ui.legendBLabel.textContent = hasJourneys ? "footfall" : "person B";
+  const hasLand = territoryAvailable(scenario);
+  ui.legendSelfLabel.textContent = hasLand ? "people" : "selected";
+  ui.legendAItem.hidden = !hasLand && !hasJourneys && !hasSocialRelations;
+  ui.legendBItem.hidden = !hasLand && !hasJourneys && !hasSocialRelations;
+  ui.legendCItem.hidden = !hasLand;
+  ui.legendALabel.textContent = hasLand ? "reserved" : hasJourneys ? "destination" : "person A";
+  ui.legendBLabel.textContent = hasLand ? "claimed" : hasJourneys ? "footfall" : "person B";
+  ui.legendCLabel.textContent = "conflict";
+  ui.territoryInspector.hidden = !hasLand;
+  ui.trailsControl.hidden = hasLand;
+  ui.relationsControl.hidden = hasLand;
+  ui.landControl.hidden = !hasLand;
+  ui.populationLabel.textContent = hasLand ? "Claimants" : "People";
   ui.editor.value = scenario.source;
   renderer.setScenario(scenario.relationMode, state.params);
+  renderer.setSelectedLand?.(null);
+  renderer.setLandVisible?.(ui.land.checked);
   setLayoutTool("inspect");
   renderer.setSelected(0);
   updateLineNumbers();
@@ -983,6 +1175,10 @@ ui.population.addEventListener("change", () => {
 });
 ui.trails.addEventListener("change", () => renderer.setTrails(ui.trails.checked));
 ui.relations.addEventListener("change", () => renderer.setRelations(ui.relations.checked));
+ui.land.addEventListener("change", () => renderer.setLandVisible?.(ui.land.checked));
+ui.territoryParcelSelect.addEventListener("change", () => {
+  handleLandSelection(ui.territoryParcelSelect.value || null);
+});
 for (const button of ui.layoutTools) {
   button.addEventListener("click", () => setLayoutTool(button.dataset.layoutTool));
 }

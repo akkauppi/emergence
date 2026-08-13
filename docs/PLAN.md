@@ -97,8 +97,10 @@ function behave({ self, chosen, destination, obstacles, field, params, vec, rand
 Code cannot mutate canonical state through this API. Student rules follow a pure-function
 contract and should use only their arguments; the current JavaScript runtime is not a
 security boundary and cannot enforce purity against deliberately hostile code. Movement
-is only the first intent family. The same boundary will later accept validated
-`emitField`, `reserveLand`, `claimLand`, `build`, and `connect` intents.
+is no longer the only intent family: territory behaviors may now return one validated
+`reserveLand` or `claimLand` intent next to their acceleration. Every intent is
+collected before the tenure store changes. The same boundary can later add validated
+`emitField`, `build`, and `connect` intents.
 
 When a journey environment is enabled, `destination` identifies the agent's current
 goal, `destinations` exposes the read-only weighted gate set, `obstacles` describes
@@ -143,6 +145,29 @@ Measurements: polarization, connected components, trip length, detour ratio, tra
 
 Add an immutable land geometry layer plus independent layers for tenure, occupation, land use, and desirability. Arriving agents can reserve a cell or polygon, bid during conflict, claim after a reservation period, and release or subdivide holdings.
 
+The first territory vertical slice is implemented on an immutable rectangular grid:
+
+- Every site has stable row-major identity, cardinal topology, and authored access,
+  amenity, terrain, cost, and frontage values.
+- Every behavior in tick `t` reads the same frozen geometry-and-tenure snapshot and may
+  submit at most one reservation or claim intent. Malformed intent structure aborts the
+  tick before movement or tenure changes; a well-formed but ineligible action is a
+  recorded domain rejection.
+- Reservation bids are grouped and resolved centrally. Higher priority wins; exact ties
+  use a deterministic hash of seed, tick, land ID, and agent ID instead of storage order.
+- A winning reservation is stamped with explicit maturity and expiry ticks. Only its
+  owner may claim it while mature and active.
+- An owner's first claim may seed a parcel anywhere. Every later claim must share a
+  cardinal edge with land that owner had already claimed in the frozen snapshot.
+  Reservations and same-tick claims cannot form a temporary bridge.
+- Geometry, tenure, and future occupation remain independent. A claim does not yet turn
+  a site into a collision obstacle or building.
+- The canvas distinguishes available, reserved, contested, and claimed cells without
+  relying only on hue, outlines parcel perimeters, and exposes a keyboard-accessible
+  tenure inspector. Live measures include claimed share, conflicts, owner count, parcel
+  area and compactness, ownership concentration, reservations, claims, expiries, and
+  rejected actions.
+
 Initial land sequence:
 
 1. Evaluate unclaimed sites by access, amenity, terrain, and neighbour preferences.
@@ -150,6 +175,10 @@ Initial land sequence:
 3. Resolve conflicts centrally with an explicit policy and seeded tie-break.
 4. Require contiguous growth and optionally street frontage.
 5. Turn successful claims into obstacles, destinations, or new trip demand.
+
+Steps 1–3 and the contiguous-growth part of step 4 now have a deterministic grid-based foundation. The remaining depth in this
+stage is real affordability and budget locking, hard frontage eligibility, release and
+subdivision, richer parcel geometry, and coupling claims to occupation or demand.
 
 Measurements: parcel area, frontage, depth, compactness, ownership concentration, conflicts, and landlocked plots.
 
@@ -208,8 +237,10 @@ Conflicting actions are grouped by target and resolved centrally. A reservation 
 
 ### 0.3 — Claims and parcels
 
-- Land grid prototype with reservation/claim arbitration
-- Access, budget, frontage, contiguous parcel growth, and parcel metrics
+- Land grid prototype with reservation/claim arbitration (implemented foundation)
+- Attributed access, terrain, cost and frontage plus contiguous parcel growth and parcel metrics (implemented foundation)
+- Add agent budgets, bid locks/refunds, and hard affordability/frontage policies
+- Add release, subdivision, and non-grid parcel geometry
 - Scenario versioning and instructor-authored locked parameters
 
 ### 0.4 — Streets and settlement
@@ -236,7 +267,8 @@ Headless engine tests should establish that:
 - no accepted intent creates `NaN`, infinity, an invalid ID, or an out-of-bounds position;
 - malformed behavior is isolated and reported;
 - desire-path agents remain finite, bounded, and outside obstacles while completing horizontal, vertical, and diagonal journeys through central, regular-grid, staggered-grid, and weighted multi-gate layouts;
-- reservation conflicts and expiries are stable once land exists.
+- every territory behavior in a tick observes the same tenure snapshot, contested cells resolve independently of agent storage order, and an invalid intent leaves the whole tick unchanged;
+- reservations mature and expire at exact documented ticks, no cell is double-owned, every owner's claimed cells remain cardinally connected, and reservation conflicts and expiries replay exactly.
 
 Browser checks should cover applying a behavior, a visible compactness trend change, worker recovery, resize without reset, mobile tabs, presentation mode, and all labeled controls.
 

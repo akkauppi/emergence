@@ -2,7 +2,7 @@
 
 Emergence Lab is a browser-based teaching playground for asking a deceptively simple question: **how can a shared spatial pattern arise when every person follows only a local rule?**
 
-The first working slice models the classroom movement experiment with stable social references. Each simulated person secretly chooses two others. In the convergent preset they move between their chosen people; in the divergent preset they keep one chosen person between themselves and the other. A second slice connects movement to morphology: repeated journeys deposit a fading footfall field, and later walkers can follow the traces left by earlier ones.
+The first working slice models the classroom movement experiment with stable social references. Each simulated person secretly chooses two others. In the convergent preset they move between their chosen people; in the divergent preset they keep one chosen person between themselves and the other. A second slice connects movement to morphology: repeated journeys deposit a fading footfall field, and later walkers can follow the traces left by earlier ones. A third slice adds tenure: people evaluate an immutable land grid, compete for reservations, wait for them to mature, and grow edge-connected parcels.
 
 ## Run it
 
@@ -35,6 +35,7 @@ npm run check  # test and build
 - Editable JavaScript behavior with apply/reset and error reporting
 - Convergent, divergent, equidistant, two-sided triangle, chiral triangle, and wandering examples
 - A desire-path experiment with editable weighted gates, blocks and block grids, repeat trips, and a persistent footfall field
+- A territory experiment with attributed land, simultaneous reservation conflicts, expiring reservations, and contiguous parcel growth
 - Delayed sensing with visible historical-reference ghosts
 - Drag-to-perturb interventions that preserve the relationship network and simulation tick
 - Pause, single-step, same-seed reset, new seed, tempo, and population controls
@@ -71,6 +72,10 @@ seed and an empty footfall field. That keeps the people and starting conditions
 comparable while ensuring traces from the previous geometry do not contaminate the new
 one.
 
-The editor currently evaluates trusted classroom JavaScript in a disposable Web Worker. A worker prevents accidental code from freezing the page, but is not a security boundary; do not run untrusted shared code until the planned interpreter sandbox is added. Student rules should be pure: use only the values and helpers passed to `behave`, and use `random(key)` for seeded randomness. Journey rules additionally receive `destination`, read-only `destinations` and `obstacles`, plus `field.sample(point)` and `field.gradient(point, step)` for sensing accumulated footfall.
+The editor currently evaluates trusted classroom JavaScript in a disposable Web Worker. A worker prevents accidental code from freezing the page, but is not a security boundary; do not run untrusted shared code until the planned interpreter sandbox is added. Student rules should be pure: use only the values and helpers passed to `behave`, and use `random(key)` for seeded randomness. Journey rules additionally receive `destination`, read-only `destinations` and `obstacles`, plus `field.sample(point)` and `field.gradient(point, step)` for sensing accumulated footfall. Territory rules receive a frozen `land` view with `cells`, `mine`, `reservation`, `cell(id)`, and `neighbors(id)`, and may return either `reserveLand` or `claimLand`.
+
+Then choose **Territory · reserve and grow parcels**. Every person sees the same frozen land snapshot for a tick and scores sites by access, amenities, terrain, cost, travel distance, and compact growth. The editable rule may submit one `reserveLand` or `claimLand` intent alongside its movement acceleration. Reservations are not applied while agents decide: the engine groups all bids by cell, chooses the highest priority, and uses a seed-based tie-break only when priorities match. A reservation must mature before its owner can claim it, expires if left unclaimed, and—after the first site—can only extend a parcel across a shared edge. Diagonal contact never counts as connected growth. Click a cell to inspect its tenure, holder, timing, frontage, and parcel form; use the same seed to compare preference weights without changing the underlying land.
+
+The land layer deliberately separates **geometry** from **tenure**. A claim colors ownership but does not yet create a building, obstacle, or land use. Budgets, reservation locks, occupation, subdivision, and moving access values remain later Phase 3 and Phase 4 work.
 
 See [docs/PLAN.md](docs/PLAN.md) for the product, teaching, architecture, and urban-growth roadmap.
