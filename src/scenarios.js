@@ -109,59 +109,188 @@ const wanderSource = `function behave({ self, params, random }) {
   };
 }`;
 
-const desirePathSource = `function behave({ self, destination, obstacles, field, params, vec }) {
+const desirePathSource = `function segmentCrossesBlock(from, to, block, padding) {
+  // Clip the journey segment against a padded rectangle. Padding leaves room
+  // for the walker's body rather than treating people as dimensionless dots.
+  const bounds = {
+    left: block.x - padding,
+    right: block.x + block.width + padding,
+    top: block.y - padding,
+    bottom: block.y + block.height + padding
+  };
+  const delta = { x: to.x - from.x, y: to.y - from.y };
+  let entry = 0;
+  let exit = 1;
+
+  for (const axis of ["x", "y"]) {
+    const low = axis === "x" ? bounds.left : bounds.top;
+    const high = axis === "x" ? bounds.right : bounds.bottom;
+    if (Math.abs(delta[axis]) < 0.000001) {
+      if (from[axis] < low || from[axis] > high) return false;
+      continue;
+    }
+    const first = (low - from[axis]) / delta[axis];
+    const second = (high - from[axis]) / delta[axis];
+    entry = Math.max(entry, Math.min(first, second));
+    exit = Math.min(exit, Math.max(first, second));
+    if (entry > exit) return false;
+  }
+  return exit >= 0 && entry <= 1;
+}
+
+function distanceToBlock(point, block) {
+  const dx = Math.max(block.x - point.x, 0, point.x - block.x - block.width);
+  const dy = Math.max(block.y - point.y, 0, point.y - block.y - block.height);
+  return Math.hypot(dx, dy);
+}
+
+function distanceToSegment(point, from, to) {
+  const segment = { x: to.x - from.x, y: to.y - from.y };
+  const lengthSquared = segment.x * segment.x + segment.y * segment.y;
+  if (lengthSquared < 0.000001) {
+    return Math.hypot(point.x - from.x, point.y - from.y);
+  }
+  const projection = Math.max(0, Math.min(1,
+    ((point.x - from.x) * segment.x +
+      (point.y - from.y) * segment.y) / lengthSquared
+  ));
+  return Math.hypot(
+    point.x - (from.x + segment.x * projection),
+    point.y - (from.y + segment.y * projection)
+  );
+}
+
+function behave({ self, destination, obstacles, field, params, vec, world }) {
   if (!destination) return { acceleration: { x: 0, y: 0 } };
 
   const goal = { x: destination.x, y: destination.y };
   const forward = vec.unit(vec.subtract(goal, self.position));
-  const lateral = { x: -forward.y, y: forward.x };
-
-  // Compare footfall just ahead and to either side. A stronger trace can
-  // recruit later walkers onto an earlier route; zero influence removes
-  // that feedback while leaving the destinations and obstacle unchanged.
-  const lookAhead = vec.add(self.position, vec.scale(forward, 42));
-  const leftProbe = vec.add(lookAhead, vec.scale(lateral, 30));
-  const rightProbe = vec.add(lookAhead, vec.scale(lateral, -30));
-  const traceTurn = (
-    field.sample(leftProbe) - field.sample(rightProbe)
-  ) * params.trailInfluence;
-  // Pairs leave each gate with opposite exploratory preferences. This avoids
-  // baking a winning side into the preset while remaining seed-reproducible.
-  const inheritedTurn = self.id % 4 < 2 ? -1 : 1;
-  const turn = Math.abs(traceTurn) > 0.004
-    ? (traceTurn > 0 ? 1 : -1)
-    : inheritedTurn;
 
   let target = goal;
-  const obstacle = obstacles[0];
-  if (obstacle) {
-    const clearance = 46;
-    const rightEdge = obstacle.x + obstacle.width;
-    const bottomEdge = obstacle.y + obstacle.height;
-    const obstacleAhead = (
-      forward.x >= 0
-        ? self.position.x < rightEdge + clearance && goal.x > obstacle.x
-        : self.position.x > obstacle.x - clearance && goal.x < rightEdge
-    );
-    const nearObstacleBand = (
-      self.position.y > obstacle.y - clearance &&
-      self.position.y < bottomEdge + clearance
-    );
+  const bodyPadding = self.radius + 3;
+  const waypointPadding = self.radius + 10;
+  let threat = null;
+  let threatScore = Infinity;
 
-    if (obstacleAhead && nearObstacleBand) {
-      // Use a near and far corner so the segment does not cut through the
-      // rectangle. "Turn" is relative to the current walking direction.
-      const goBelow = lateral.y * turn > 0;
-      const routeY = goBelow ? bottomEdge + clearance : obstacle.y - clearance;
-      const walkingRight = forward.x >= 0;
-      const approaching = walkingRight
-        ? self.position.x < obstacle.x - clearance * 0.35
-        : self.position.x > rightEdge + clearance * 0.35;
-      const routeX = walkingRight
-        ? (approaching ? obstacle.x - clearance : rightEdge + clearance)
-        : (approaching ? rightEdge + clearance : obstacle.x - clearance);
-      target = { x: routeX, y: routeY };
+  // Find the nearest rectangle that blocks the direct route. A very close
+  // rectangle also counts as a threat, which prevents clipping a corner when
+  // the desired path changes between neighbouring blocks.
+  for (const block of obstacles) {
+    const centre = {
+      x: block.x + block.width / 2,
+      y: block.y + block.height / 2
+    };
+    const ahead = vec.dot(vec.subtract(centre, self.position), forward);
+    const distance = distanceToBlock(self.position, block);
+    const blocking = segmentCrossesBlock(
+      self.position,
+      goal,
+      block,
+      bodyPadding
+    );
+    const nearby = distance < waypointPadding * 1.35 && ahead > -waypointPadding;
+    if (!blocking && !nearby) continue;
+
+    // Direct blockers outrank incidental nearby blocks. IDs make an exact
+    // geometric tie independent of the order in the obstacles array.
+    const score = distance + (blocking ? 0 : waypointPadding * 4);
+    const key = String(block.id);
+    if (
+      score < threatScore - 0.000001 ||
+      (Math.abs(score - threatScore) <= 0.000001 && key < String(threat?.id))
+    ) {
+      threat = block;
+      threatScore = score;
     }
+  }
+
+  if (threat) {
+    const left = threat.x - waypointPadding;
+    const right = threat.x + threat.width + waypointPadding;
+    const top = threat.y - waypointPadding;
+    const bottom = threat.y + threat.height + waypointPadding;
+    const corners = [
+      { x: left, y: top },
+      { x: right, y: top },
+      { x: right, y: bottom },
+      { x: left, y: bottom }
+    ];
+    // Each pair is one side of the padded block: top, right, bottom, left.
+    // Trying both orders lets the same code handle horizontal, vertical and
+    // diagonal trips without naming a privileged direction.
+    const sides = [[0, 1], [1, 2], [2, 3], [3, 0]];
+
+    function insideWorld(point) {
+      const margin = self.radius + 2;
+      return point.x >= margin && point.x <= world.width - margin &&
+        point.y >= margin && point.y <= world.height - margin;
+    }
+
+    function clearPoint(point) {
+      if (!insideWorld(point)) return false;
+      return obstacles.every((block) =>
+        distanceToBlock(point, block) >= self.radius + 2
+      );
+    }
+
+    function clearSegment(from, to) {
+      return !segmentCrossesBlock(from, to, threat, bodyPadding);
+    }
+
+    // A corner belongs to two sides, so calculate layout clearance once.
+    const clearCorners = corners.map(clearPoint);
+
+    function scoreOrder(firstIndex, secondIndex, sideIndex, orderIndex) {
+      if (!clearCorners[firstIndex] || !clearCorners[secondIndex]) return null;
+      const first = corners[firstIndex];
+      const second = corners[secondIndex];
+      const onCorridor =
+        distanceToSegment(self.position, first, second) < waypointPadding &&
+        clearSegment(self.position, second);
+      const waypoint = onCorridor ? second : first;
+      if (
+        !clearSegment(self.position, waypoint) ||
+        (!onCorridor && !clearSegment(first, second)) ||
+        !clearSegment(second, goal)
+      ) return null;
+
+      const middle = vec.midpoint(first, second);
+      const distance = vec.distance(self.position, waypoint) +
+        (onCorridor ? 0 : vec.distance(first, second)) +
+        vec.distance(second, goal);
+      // field.sample() is normalized to 0–1, so this score stays meaningful
+      // when the total number of walkers or the field's age changes.
+      const trace = (
+        field.sample(first) +
+        field.sample(middle) +
+        field.sample(second)
+      ) / 3;
+      return {
+        waypoint,
+        score: distance - trace * params.trailInfluence * 180,
+        // This only decides near-exact ties. It splits walkers reproducibly
+        // without depending on obstacle-array order or mutable memory.
+        tieRank: ((sideIndex + self.id) % 4) * 2 + orderIndex
+      };
+    }
+
+    let bestRoute = null;
+    for (let sideIndex = 0; sideIndex < sides.length; sideIndex += 1) {
+      const [firstIndex, secondIndex] = sides[sideIndex];
+      const orders = [
+        scoreOrder(firstIndex, secondIndex, sideIndex, 0),
+        scoreOrder(secondIndex, firstIndex, sideIndex, 1)
+      ];
+      for (const route of orders) {
+        if (!route) continue;
+        const clearlyShorter = !bestRoute || route.score < bestRoute.score - 0.75;
+        const tied = bestRoute && Math.abs(route.score - bestRoute.score) <= 0.75;
+        if (clearlyShorter || (tied && route.tieRank < bestRoute.tieRank)) {
+          bestRoute = route;
+        }
+      }
+    }
+    if (bestRoute) target = bestRoute.waypoint;
   }
 
   return {
@@ -335,10 +464,12 @@ export const scenarios = [
     kicker: "Movement leaves a memory",
     stage: { number: "02", label: "Interaction laboratory / 02" },
     description:
-      "People make repeated trips between two destinations around one obstruction. Every footstep adds a fading trace; walkers sample the ground ahead, so routes that are used become more attractive to those who follow.",
-    steps: ["Walk toward the other destination", "Route around the obstruction", "Prefer the stronger trace ahead"],
-    question: "Before running: will traffic keep two equal routes, or will a small early advantage recruit later walkers into one shared path? Set trail influence to zero for the control run.",
+      "People make repeated trips among editable, weighted destination gates through a layout of blocks. Every footstep adds a fading trace; walkers compare four ways around nearby blocks, so routes that are used become more attractive to those who follow.",
+    steps: ["Place and weight destination gates", "Draw blocks or a block grid", "Prefer a shorter or stronger traced corridor"],
+    question: "Before running: which gaps will become routes? Add a third gate or change its likelihood, then compare the same layout and seed with trail influence at zero.",
     relationMode: "none",
+    editableLayout: true,
+    editableDestinations: true,
     matchLabel: "footfall held by the busiest cells",
     summaryMetrics: [
       { label: "Completed trips", key: "trips", format: "integer", detail: "gate-to-gate arrivals" },
@@ -360,8 +491,8 @@ export const scenarios = [
     source: desirePathSource,
     environment: {
       destinations: [
-        { id: "west", label: "West gate", x: 120, y: 325, radius: 34 },
-        { id: "east", label: "East gate", x: 880, y: 325, radius: 34 },
+        { id: "west", label: "West gate", x: 120, y: 325, radius: 34, weight: 1 },
+        { id: "east", label: "East gate", x: 880, y: 325, radius: 34, weight: 1 },
       ],
       obstacles: [
         { id: "central-block", x: 430, y: 230, width: 140, height: 190 },

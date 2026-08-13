@@ -1,4 +1,11 @@
 import { clampWorldPoint, equilateralApex, nearestEquilateralApex } from "./simulation/geometry.js";
+import {
+  generateBlockGrid,
+  normalizeGate,
+  normalizeLayoutRect,
+  pointInCircle,
+  pointInRect,
+} from "./layout-tools.js";
 
 const COLORS = {
   background: "#142137",
@@ -12,6 +19,9 @@ const COLORS = {
   target: "#f4ede0",
   destination: "#70d6b5",
   obstacle: "#0c1728",
+  layoutPreview: "rgba(112, 214, 181, 0.22)",
+  layoutPreviewLine: "rgba(112, 214, 181, 0.94)",
+  erase: "rgba(242, 122, 80, 0.32)",
 };
 
 const DRAG_THRESHOLD_CSS_PIXELS = 6;
@@ -129,13 +139,26 @@ export function clientToWorld(clientX, clientY, rect, viewport) {
 }
 
 export class CanvasRenderer {
-  constructor(canvas, { onSelect, onDragStart, onPerturb, onDragCancel } = {}) {
+  constructor(canvas, {
+    onSelect,
+    onDragStart,
+    onPerturb,
+    onDragCancel,
+    onLayoutGesture,
+    onEnvironmentErase,
+    onObstacleErase,
+    onDestinationErase,
+  } = {}) {
     this.canvas = canvas;
     this.context = canvas.getContext("2d", { alpha: false });
     this.onSelect = onSelect;
     this.onDragStart = onDragStart;
     this.onPerturb = onPerturb;
     this.onDragCancel = onDragCancel;
+    this.onLayoutGesture = onLayoutGesture;
+    this.onEnvironmentErase = onEnvironmentErase;
+    this.onObstacleErase = onObstacleErase;
+    this.onDestinationErase = onDestinationErase;
     this.frame = null;
     this.lastTick = -1;
     this.lastSeed = null;
@@ -148,6 +171,16 @@ export class CanvasRenderer {
     this.trails = new Map();
     this.drag = null;
     this.pendingPerturbation = null;
+    this.layoutTool = "inspect";
+    this.layoutConfig = {
+      rows: 2,
+      columns: 2,
+      gap: 12,
+      gateDefaultRadius: 34,
+      gateMinRadius: 18,
+      gateMaxRadius: 70,
+    };
+    this.hoveredEraseTarget = null;
     this.fieldCache = null;
     this.viewport = { scale: 1, offsetX: 0, offsetY: 0, cssWidth: 0, cssHeight: 0 };
 
@@ -158,8 +191,29 @@ export class CanvasRenderer {
     canvas.addEventListener("pointerup", (event) => this.#handlePointerUp(event));
     canvas.addEventListener("pointercancel", (event) => this.#handlePointerCancel(event));
     canvas.addEventListener("pointerleave", () => {
-      if (!this.drag) canvas.style.cursor = "default";
+      if (!this.drag) {
+        this.hoveredEraseTarget = null;
+        canvas.style.cursor = this.#idleCursor();
+        this.draw();
+      }
     });
+  }
+
+  setLayoutTool(tool, config = {}) {
+    const supported = new Set(["inspect", "block", "grid", "gate", "erase"]);
+    this.layoutTool = supported.has(tool) ? tool : "inspect";
+    this.layoutConfig = {
+      rows: Math.max(1, Math.floor(finiteNumber(config.rows, this.layoutConfig.rows))),
+      columns: Math.max(1, Math.floor(finiteNumber(config.columns, this.layoutConfig.columns))),
+      gap: Math.max(0, finiteNumber(config.gap, this.layoutConfig.gap)),
+      gateDefaultRadius: Math.max(1, finiteNumber(config.gateDefaultRadius, this.layoutConfig.gateDefaultRadius)),
+      gateMinRadius: Math.max(1, finiteNumber(config.gateMinRadius, this.layoutConfig.gateMinRadius)),
+      gateMaxRadius: Math.max(1, finiteNumber(config.gateMaxRadius, this.layoutConfig.gateMaxRadius)),
+    };
+    this.hoveredEraseTarget = null;
+    if (this.drag?.kind === "layout" || this.drag?.kind === "erase") this.drag = null;
+    this.canvas.style.cursor = this.#idleCursor();
+    this.draw();
   }
 
   setScenario(relationMode, params) {
@@ -188,7 +242,7 @@ export class CanvasRenderer {
   cancelPerturbationPreview() {
     this.drag = null;
     this.pendingPerturbation = null;
-    this.canvas.style.cursor = "default";
+    this.canvas.style.cursor = this.#idleCursor();
     this.draw();
   }
 
@@ -276,6 +330,7 @@ export class CanvasRenderer {
     this.#drawTrails(context);
     if (this.relationsEnabled) this.#drawRelations(context);
     this.#drawAgents(context);
+    this.#drawLayoutOverlay(context);
     context.restore();
   }
 
@@ -391,6 +446,10 @@ export class CanvasRenderer {
       const node = resolveDestination(destination);
       if (!node) continue;
       context.save();
+      const arrivalRadius = Math.max(
+        node.radius,
+        finiteNumber(environment.journeys?.arrivalRadius, node.radius),
+      );
       const halo = context.createRadialGradient(node.x, node.y, 0, node.x, node.y, node.radius * 1.7);
       halo.addColorStop(0, "rgba(112, 214, 181, 0.36)");
       halo.addColorStop(0.5, "rgba(112, 214, 181, 0.13)");
@@ -406,6 +465,15 @@ export class CanvasRenderer {
       context.arc(node.x, node.y, node.radius, 0, Math.PI * 2);
       context.fill();
       context.stroke();
+      if (arrivalRadius > node.radius + 0.5) {
+        context.setLineDash([4 / this.viewport.scale, 4 / this.viewport.scale]);
+        context.globalAlpha = 0.42;
+        context.beginPath();
+        context.arc(node.x, node.y, arrivalRadius, 0, Math.PI * 2);
+        context.stroke();
+        context.setLineDash([]);
+        context.globalAlpha = 1;
+      }
       context.beginPath();
       context.moveTo(node.x - node.radius * 0.42, node.y);
       context.lineTo(node.x + node.radius * 0.42, node.y);
@@ -415,7 +483,9 @@ export class CanvasRenderer {
       context.restore();
       this.#drawEnvironmentLabel(
         context,
-        destination.label ?? destination.name,
+        destination.weight === undefined
+          ? destination.label ?? destination.name
+          : `${destination.label ?? destination.name ?? destination.id} · ${destination.weight}×`,
         node.x,
         node.y - node.radius - 8 / this.viewport.scale,
         COLORS.destination,
@@ -457,7 +527,7 @@ export class CanvasRenderer {
   }
 
   #displayAgent(agent) {
-    const preview = this.drag?.active && this.drag.agentId === agent.id
+    const preview = this.drag?.kind === "agent" && this.drag.active && this.drag.agentId === agent.id
       ? this.drag.position
       : this.pendingPerturbation?.agentId === agent.id
         ? this.pendingPerturbation.position
@@ -706,10 +776,144 @@ export class CanvasRenderer {
     context.restore();
   }
 
+  #drawLayoutOverlay(context) {
+    const hairline = 1.5 / this.viewport.scale;
+    if (this.layoutTool === "erase" && this.hoveredEraseTarget) {
+      const { type, id } = this.hoveredEraseTarget;
+      if (type === "obstacle") {
+        const obstacle = (this.frame.environment?.obstacles || [])
+          .find((candidate) => String(candidate.id) === String(id));
+        const rect = resolveObstacleRect(obstacle);
+        if (rect) {
+          context.save();
+          context.fillStyle = COLORS.erase;
+          context.strokeStyle = COLORS.selected;
+          context.lineWidth = hairline * 1.3;
+          context.fillRect(rect.x, rect.y, rect.width, rect.height);
+          context.strokeRect(rect.x, rect.y, rect.width, rect.height);
+          context.beginPath();
+          context.moveTo(rect.x, rect.y);
+          context.lineTo(rect.x + rect.width, rect.y + rect.height);
+          context.moveTo(rect.x + rect.width, rect.y);
+          context.lineTo(rect.x, rect.y + rect.height);
+          context.stroke();
+          context.restore();
+        }
+      } else if (type === "destination") {
+        const destination = (this.frame.environment?.destinations || [])
+          .find((candidate) => String(candidate.id) === String(id));
+        const gate = resolveDestination(destination);
+        if (gate) {
+          const cross = gate.radius * 0.58;
+          context.save();
+          context.fillStyle = COLORS.erase;
+          context.strokeStyle = COLORS.selected;
+          context.lineWidth = hairline * 1.3;
+          context.beginPath();
+          context.arc(gate.x, gate.y, gate.radius, 0, Math.PI * 2);
+          context.fill();
+          context.stroke();
+          context.beginPath();
+          context.moveTo(gate.x - cross, gate.y - cross);
+          context.lineTo(gate.x + cross, gate.y + cross);
+          context.moveTo(gate.x + cross, gate.y - cross);
+          context.lineTo(gate.x - cross, gate.y + cross);
+          context.stroke();
+          context.restore();
+        }
+      }
+    }
+
+    if (!(["block", "grid", "gate"].includes(this.layoutTool)) || this.drag?.kind !== "layout") return;
+    if (this.layoutTool === "gate") {
+      const gate = normalizeGate(
+        { start: this.drag.start, end: this.drag.end, dragged: this.drag.active },
+        {
+          width: this.frame.width,
+          height: this.frame.height,
+          defaultRadius: this.layoutConfig.gateDefaultRadius,
+          minRadius: this.layoutConfig.gateMinRadius,
+          maxRadius: this.layoutConfig.gateMaxRadius,
+        },
+      );
+      if (!gate) return;
+      context.save();
+      context.fillStyle = COLORS.layoutPreview;
+      context.strokeStyle = COLORS.layoutPreviewLine;
+      context.lineWidth = hairline;
+      context.setLineDash([6 / this.viewport.scale, 4 / this.viewport.scale]);
+      context.beginPath();
+      context.arc(gate.x, gate.y, gate.radius, 0, Math.PI * 2);
+      context.fill();
+      context.stroke();
+      const arrivalRadius = Math.max(
+        gate.radius,
+        finiteNumber(this.frame.environment?.journeys?.arrivalRadius, gate.radius),
+      );
+      if (arrivalRadius > gate.radius + 0.5) {
+        context.globalAlpha = 0.55;
+        context.beginPath();
+        context.arc(gate.x, gate.y, arrivalRadius, 0, Math.PI * 2);
+        context.stroke();
+        context.globalAlpha = 1;
+      }
+      context.setLineDash([]);
+      context.beginPath();
+      context.moveTo(gate.x - 7 / this.viewport.scale, gate.y);
+      context.lineTo(gate.x + 7 / this.viewport.scale, gate.y);
+      context.moveTo(gate.x, gate.y - 7 / this.viewport.scale);
+      context.lineTo(gate.x, gate.y + 7 / this.viewport.scale);
+      context.stroke();
+      context.restore();
+      return;
+    }
+
+    const bounds = normalizeLayoutRect(
+      { start: this.drag.start, end: this.drag.end, dragged: this.drag.active },
+      {
+        width: this.frame.width,
+        height: this.frame.height,
+        defaultWidth: this.layoutTool === "grid" ? 360 : 120,
+        defaultHeight: this.layoutTool === "grid" ? 270 : 100,
+        minSize: this.layoutTool === "grid" ? 60 : 24,
+      },
+    );
+    if (!bounds) return;
+    const previewRects = this.layoutTool === "grid"
+      ? generateBlockGrid(bounds, this.layoutConfig)
+      : [bounds];
+
+    context.save();
+    context.fillStyle = COLORS.layoutPreview;
+    context.strokeStyle = COLORS.layoutPreviewLine;
+    context.lineWidth = hairline;
+    context.setLineDash([6 / this.viewport.scale, 4 / this.viewport.scale]);
+    if (previewRects.length === 0) {
+      context.strokeStyle = COLORS.selected;
+      context.strokeRect(bounds.x, bounds.y, bounds.width, bounds.height);
+    } else {
+      for (const rect of previewRects) {
+        context.fillRect(rect.x, rect.y, rect.width, rect.height);
+        context.strokeRect(rect.x, rect.y, rect.width, rect.height);
+      }
+    }
+    context.restore();
+  }
+
   #eventPoint(event) {
     const rect = this.canvas.getBoundingClientRect();
     const viewport = this.#refreshViewport(rect);
     return clientToWorld(event.clientX, event.clientY, rect, viewport);
+  }
+
+  #layoutEventPoint(event) {
+    return clampWorldPoint(this.#eventPoint(event), 0, this.frame.width, this.frame.height);
+  }
+
+  #idleCursor() {
+    if (["block", "grid", "gate"].includes(this.layoutTool)) return "crosshair";
+    if (this.layoutTool === "erase") return this.hoveredEraseTarget === null ? "crosshair" : "pointer";
+    return "default";
   }
 
   #hitTest(point) {
@@ -726,8 +930,54 @@ export class CanvasRenderer {
     return nearest && distance * this.viewport.scale < 34 ? nearest : null;
   }
 
+  #hitTestEnvironment(point) {
+    const destinations = this.frame?.environment?.destinations || [];
+    for (let index = destinations.length - 1; index >= 0; index -= 1) {
+      const destination = destinations[index];
+      if (pointInCircle(point, destination)) return { type: "destination", id: destination.id };
+    }
+    const obstacles = this.frame?.environment?.obstacles || [];
+    for (let index = obstacles.length - 1; index >= 0; index -= 1) {
+      const obstacle = obstacles[index];
+      const rect = resolveObstacleRect(obstacle);
+      if (rect && pointInRect(point, rect)) return { type: "obstacle", id: obstacle.id };
+    }
+    return null;
+  }
+
   #handlePointerDown(event) {
     if (!this.frame || this.pendingPerturbation || (event.pointerType === "mouse" && event.button !== 0)) return;
+
+    if (["block", "grid", "gate"].includes(this.layoutTool)) {
+      event.preventDefault();
+      const point = this.#layoutEventPoint(event);
+      this.drag = {
+        kind: "layout",
+        pointerId: event.pointerId,
+        startClientX: event.clientX,
+        startClientY: event.clientY,
+        start: point,
+        end: point,
+        active: false,
+      };
+      this.#capturePointer(event.pointerId);
+      this.canvas.style.cursor = "crosshair";
+      this.draw();
+      return;
+    }
+
+    if (this.layoutTool === "erase") {
+      const target = this.#hitTestEnvironment(this.#layoutEventPoint(event));
+      if (!target) return;
+      event.preventDefault();
+      this.hoveredEraseTarget = target;
+      this.drag = { kind: "erase", pointerId: event.pointerId, target };
+      this.#capturePointer(event.pointerId);
+      this.canvas.style.cursor = "pointer";
+      this.draw();
+      return;
+    }
+
     const point = this.#eventPoint(event);
     const agent = this.#hitTest(point);
     if (!agent) return;
@@ -736,6 +986,7 @@ export class CanvasRenderer {
     this.selectedId = agent.id;
     this.onSelect?.(agent.id);
     this.drag = {
+      kind: "agent",
       pointerId: event.pointerId,
       agentId: agent.id,
       startClientX: event.clientX,
@@ -743,11 +994,7 @@ export class CanvasRenderer {
       position: { x: agent.x, y: agent.y },
       active: false,
     };
-    try {
-      this.canvas.setPointerCapture?.(event.pointerId);
-    } catch {
-      // Synthetic or already-cancelled pointers may not be capturable.
-    }
+    this.#capturePointer(event.pointerId);
     this.canvas.style.cursor = "grabbing";
     this.draw();
   }
@@ -755,13 +1002,39 @@ export class CanvasRenderer {
   #handlePointerMove(event) {
     if (!this.frame) return;
     if (!this.drag || this.drag.pointerId !== event.pointerId) {
+      if (["block", "grid", "gate"].includes(this.layoutTool)) {
+        this.canvas.style.cursor = "crosshair";
+        return;
+      }
+      if (this.layoutTool === "erase") {
+        const previous = this.hoveredEraseTarget;
+        this.hoveredEraseTarget = this.#hitTestEnvironment(this.#layoutEventPoint(event));
+        this.canvas.style.cursor = this.#idleCursor();
+        if (previous?.type !== this.hoveredEraseTarget?.type || previous?.id !== this.hoveredEraseTarget?.id) this.draw();
+        return;
+      }
       const hovered = this.#hitTest(this.#eventPoint(event));
       this.canvas.style.cursor = hovered ? "grab" : "default";
       return;
     }
 
     event.preventDefault();
+    if (this.drag.kind === "erase") {
+      const previous = this.hoveredEraseTarget;
+      this.hoveredEraseTarget = this.#hitTestEnvironment(this.#layoutEventPoint(event));
+      this.canvas.style.cursor = this.#idleCursor();
+      if (previous?.type !== this.hoveredEraseTarget?.type || previous?.id !== this.hoveredEraseTarget?.id) this.draw();
+      return;
+    }
+
     const movement = Math.hypot(event.clientX - this.drag.startClientX, event.clientY - this.drag.startClientY);
+    if (this.drag.kind === "layout") {
+      this.drag.active ||= movement >= DRAG_THRESHOLD_CSS_PIXELS;
+      this.drag.end = this.#layoutEventPoint(event);
+      this.draw();
+      return;
+    }
+
     if (!this.drag.active && movement >= DRAG_THRESHOLD_CSS_PIXELS) {
       this.drag.active = true;
       this.onDragStart?.(this.drag.agentId);
@@ -777,6 +1050,39 @@ export class CanvasRenderer {
   #handlePointerUp(event) {
     if (!this.drag || this.drag.pointerId !== event.pointerId) return;
     event.preventDefault();
+    if (this.drag.kind === "layout") {
+      const movement = Math.hypot(event.clientX - this.drag.startClientX, event.clientY - this.drag.startClientY);
+      this.drag.active ||= movement >= DRAG_THRESHOLD_CSS_PIXELS;
+      this.drag.end = this.#layoutEventPoint(event);
+      const detail = {
+        tool: this.layoutTool,
+        start: { ...this.drag.start },
+        end: { ...this.drag.end },
+        dragged: this.drag.active,
+      };
+      this.#finishPointer(event.pointerId);
+      this.onLayoutGesture?.(detail);
+      this.draw();
+      return;
+    }
+    if (this.drag.kind === "erase") {
+      const hit = this.#hitTestEnvironment(this.#layoutEventPoint(event));
+      const target = hit
+        && hit.type === this.drag.target.type
+        && String(hit.id) === String(this.drag.target.id)
+        ? hit
+        : null;
+      this.#finishPointer(event.pointerId);
+      this.hoveredEraseTarget = null;
+      this.canvas.style.cursor = this.#idleCursor();
+      if (target) {
+        if (this.onEnvironmentErase) this.onEnvironmentErase({ ...target });
+        else if (target.type === "obstacle") this.onObstacleErase?.(target.id);
+        else this.onDestinationErase?.(target.id);
+      }
+      this.draw();
+      return;
+    }
     if (this.drag.active) {
       this.pendingPerturbation = {
         agentId: this.drag.agentId,
@@ -791,10 +1097,20 @@ export class CanvasRenderer {
 
   #handlePointerCancel(event) {
     if (!this.drag || this.drag.pointerId !== event.pointerId) return;
-    const wasActive = this.drag.active;
+    const wasActiveAgentDrag = this.drag.kind === "agent" && this.drag.active;
     this.#finishPointer(event.pointerId);
-    if (wasActive) this.onDragCancel?.();
+    this.hoveredEraseTarget = null;
+    this.canvas.style.cursor = this.#idleCursor();
+    if (wasActiveAgentDrag) this.onDragCancel?.();
     this.draw();
+  }
+
+  #capturePointer(pointerId) {
+    try {
+      this.canvas.setPointerCapture?.(pointerId);
+    } catch {
+      // Synthetic or already-cancelled pointers may not be capturable.
+    }
   }
 
   #finishPointer(pointerId) {
@@ -804,6 +1120,6 @@ export class CanvasRenderer {
       // The browser may release capture before pointercancel is delivered.
     }
     this.drag = null;
-    this.canvas.style.cursor = "grab";
+    this.canvas.style.cursor = this.#idleCursor();
   }
 }

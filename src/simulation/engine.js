@@ -41,6 +41,7 @@ function normalizeEnvironment(environment, worldWidth, worldHeight) {
         x: clamp(x, 0, worldWidth),
         y: clamp(y, 0, worldHeight),
         radius: clamp(finiteOr(Number(destination.radius ?? destination.r), 18), 1, 200),
+        weight: Math.max(0, finiteOr(Number(destination.weight ?? 1), 1)),
       });
     })
     .filter(Boolean));
@@ -149,6 +150,45 @@ function chooseOther(seed, agentId, population, key, excluded = new Set()) {
   return agentId;
 }
 
+function compareDestinationIds(first, second) {
+  if (first.id < second.id) return -1;
+  if (first.id > second.id) return 1;
+  return 0;
+}
+
+function chooseNextDestination(seed, agentId, arrivalCount, destinations, currentDestinationId) {
+  const candidates = destinations
+    .filter((destination) => destination.id !== currentDestinationId)
+    .sort(compareDestinationIds);
+  if (candidates.length === 0) return null;
+
+  // Scaling by the largest weight keeps the sum finite even for unusually
+  // large (but otherwise valid) weights without changing their proportions.
+  const largestWeight = candidates.reduce(
+    (maximum, destination) => Math.max(maximum, destination.weight),
+    0,
+  );
+  const random = keyedRandom(seed, agentId, arrivalCount, "journey-destination");
+  if (largestWeight <= 0) {
+    return candidates[Math.floor(random * candidates.length)];
+  }
+
+  const total = candidates.reduce(
+    (sum, destination) => sum + destination.weight / largestWeight,
+    0,
+  );
+  let cursor = random * total;
+  for (const destination of candidates) {
+    if (destination.weight <= 0) continue;
+    cursor -= destination.weight / largestWeight;
+    if (cursor < 0) return destination;
+  }
+
+  // Floating point rounding can only reach here at the upper edge. Choose the
+  // final positive candidate, never a zero-weight one.
+  return candidates.findLast((destination) => destination.weight > 0);
+}
+
 export class SimulationEngine {
   constructor({
     behavior,
@@ -233,15 +273,18 @@ export class SimulationEngine {
         ? Math.sqrt(keyedRandom(this.seed, id, "spawn-radius")) * Math.max(1, spawn.radius * 0.55)
         : 0;
       const x = spawn
-        ? clamp(spawn.x + Math.cos(spawnAngle) * spawnRadius, margin, this.width - margin)
+        ? clamp(spawn.x + Math.cos(spawnAngle) * spawnRadius, radius, this.width - radius)
         : margin + keyedRandom(this.seed, id, "initial-x") * usableWidth;
       const y = spawn
-        ? clamp(spawn.y + Math.sin(spawnAngle) * spawnRadius, margin, this.height - margin)
+        ? clamp(spawn.y + Math.sin(spawnAngle) * spawnRadius, radius, this.height - radius)
         : margin + keyedRandom(this.seed, id, "initial-y") * usableHeight;
       const angle = keyedRandom(this.seed, id, "initial-angle") * Math.PI * 2;
       const initialSpeed = 5 + keyedRandom(this.seed, id, "initial-speed") * 8;
       const first = chooseOther(this.seed, id, this.population, "chosen-a", new Set([id]));
       const second = chooseOther(this.seed, id, this.population, "chosen-b", new Set([id, first]));
+      const initialDestination = journeys?.enabled
+        ? chooseNextDestination(this.seed, id, 0, destinations, destinations[spawnIndex]?.id)
+        : null;
 
       return {
         id,
@@ -252,9 +295,8 @@ export class SimulationEngine {
         angle,
         radius,
         chosen: [first, second],
-        destinationId: journeys?.enabled
-          ? destinations[(spawnIndex + 1) % destinations.length].id
-          : null,
+        destinationId: initialDestination?.id ?? null,
+        arrivalCount: 0,
       };
     });
   }
@@ -267,6 +309,7 @@ export class SimulationEngine {
         velocity: frozenVector(agent.vx, agent.vy),
         radius: agent.radius,
         destinationId: agent.destinationId,
+        arrivalCount: agent.arrivalCount,
       }),
     );
   }
@@ -410,14 +453,32 @@ export class SimulationEngine {
 
     return agents.map((agent) => {
       const currentIndex = destinations.findIndex((destination) => destination.id === agent.destinationId);
-      if (currentIndex < 0) return { ...agent, destinationId: destinations[agent.id % destinations.length].id };
+      if (currentIndex < 0) {
+        const destination = chooseNextDestination(
+          this.seed,
+          agent.id,
+          agent.arrivalCount,
+          destinations,
+          null,
+        );
+        return { ...agent, destinationId: destination?.id ?? null };
+      }
       const destination = destinations[currentIndex];
       const threshold = Math.max(arrivalRadius, destination.radius);
       if (Math.hypot(agent.x - destination.x, agent.y - destination.y) > threshold) return agent;
       this.trips += 1;
+      const arrivalCount = agent.arrivalCount + 1;
+      const nextDestination = chooseNextDestination(
+        this.seed,
+        agent.id,
+        arrivalCount,
+        destinations,
+        destination.id,
+      );
       return {
         ...agent,
-        destinationId: destinations[(currentIndex + 1) % destinations.length].id,
+        destinationId: nextDestination?.id ?? null,
+        arrivalCount,
       };
     });
   }
@@ -797,6 +858,7 @@ export class SimulationEngine {
         journey: this.environment?.journeys.enabled ? {
           trips: this.trips,
           destinationIds: this.agents.map((agent) => agent.destinationId),
+          arrivalCounts: this.agents.map((agent) => agent.arrivalCount),
         } : undefined,
         field: this.field?.values,
       }),
@@ -824,6 +886,7 @@ export class SimulationEngine {
         radius: agent.radius,
         chosen: [...agent.chosen],
         destinationId: agent.destinationId,
+        arrivalCount: agent.arrivalCount,
       })),
     };
   }

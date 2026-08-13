@@ -36,9 +36,10 @@ The current slice records intervention metadata but does not yet export or repla
 
 The first movement-to-morphology preset is now also implemented:
 
-- **Reveal desire paths:** agents make repeat journeys between two gates separated by a rectangular obstruction. Every step deposits footfall into a scalar field; the field fades, and the editable behavior samples ahead and laterally to choose between routes. This is a feedback loop rather than a painted trail: movement changes the field and the field can change later movement.
+- **Reveal desire paths:** agents make repeat journeys among editable destination gates through an editable layout of rectangular blocks. Every step deposits footfall into a scalar field; the field fades, and the editable behavior compares the length and normalized field strength of all four side corridors around the next relevant block. This works for horizontal, vertical, and diagonal trips and is a feedback loop rather than a painted trail: movement changes the field and the field can change later movement.
 - **Control comparison:** setting trail influence to zero preserves the same destinations, obstruction, people, and seed while removing only the field-to-movement feedback.
 - **Scenario-authored measurement:** the preset replaces relationship match and spread history with trail concentration and its own concentration history.
+- **Layout intervention:** a block can be drawn directly, or a configurable rows-by-columns block grid can be generated inside a dragged area. Destination gates can be added, removed, renamed, resized at creation, and given relative likelihood weights. The previous gate is excluded from the next choice; zero-weight gates are excluded whenever a positive eligible choice exists, while an all-zero eligible set means equal choice. Erase, undo, clear, and preset restore support rapid comparisons. Each accepted edit restarts the run at tick zero with the same seed and clears the footfall field, so inherited traces cannot confound changed geometry or demand.
 
 ## 3. MVP scope and acceptance criteria
 
@@ -100,11 +101,12 @@ is only the first intent family. The same boundary will later accept validated
 `emitField`, `reserveLand`, `claimLand`, `build`, and `connect` intents.
 
 When a journey environment is enabled, `destination` identifies the agent's current
-goal, `obstacles` describes read-only rectangular constraints, and the field API exposes
-normalized `sample(point)` and `gradient(point, step)` queries. On arrival, the engine
-counts a trip and assigns the opposite destination. Footfall deposition, decay, field
-diffusion, obstacle collision, and journey reassignment remain engine-owned mechanics;
-student code chooses only its steering acceleration.
+goal, `destinations` exposes the read-only weighted gate set, `obstacles` describes
+read-only rectangular constraints, and the field API exposes normalized `sample(point)`
+and `gradient(point, step)` queries. On arrival, the engine counts a trip and chooses a
+different gate by relative likelihood using a seeded draw. Footfall deposition, decay,
+field diffusion, obstacle collision, and journey reassignment remain engine-owned
+mechanics; student code chooses only its steering acceleration.
 
 ### Runtime safety path
 
@@ -127,11 +129,13 @@ Measurements: radius of gyration, mean nearest-neighbour distance, relationship 
 
 Add local neighbourhood sensing, field of view, alignment, destinations, obstacles, and scalar fields. Repeated footfall reinforces a trail field and unused traces decay. Students can compare emergent desire paths, congestion, and landmark placement.
 
-The current vertical slice includes two destinations, rectangular obstacles, repeated
-journeys, obstacle collision, a deposited/decaying footfall grid, behavior-level field
-sensing, a rendered heat field, trip counts, and trail concentration. Local field of
-view, heterogeneous destinations, congestion measures, and side-by-side comparison
-remain follow-ups.
+The current vertical slice includes editable weighted destination gates, editable
+rectangular obstacles and block grids, repeated multi-gate journeys, obstacle collision,
+a deposited/decaying footfall grid, behavior-level field sensing, a rendered heat field,
+trip counts, and trail concentration. Its local navigation rule handles multiple blocks
+and arbitrary gate directions deterministically without private agent memory. Local
+field of view, heterogeneous traveller preferences, congestion measures, and
+side-by-side comparison remain follow-ups.
 
 Measurements: polarization, connected components, trip length, detour ratio, trail concentration, density heat maps, and side-by-side metric histories.
 
@@ -196,9 +200,10 @@ Conflicting actions are grouped by target and resolved centrally. A reservation 
 ### 0.2 — Movement and traces
 
 - Spatial hash behind a `NeighborIndex` interface
-- Obstacles and repeat origin/destination journeys (implemented for rectangular obstacles and paired destinations)
+- Obstacles and repeat origin/destination journeys (implemented for editable rectangular blocks, block grids, and weighted multi-gate destinations)
 - Footfall field, decay, desire-path renderer, and scenario-authored metric panels (implemented foundation)
-- Field of view and heterogeneous agents/destinations
+- Direct-manipulation layout tools with same-seed, cleared-field restarts (implemented)
+- Field of view and heterogeneous agents or traveller-specific destination preferences
 - Checkpoints/replay and downloadable CSV measurements
 
 ### 0.3 — Claims and parcels
@@ -230,6 +235,7 @@ Headless engine tests should establish that:
 - reset and checkpoint/restore continue identically;
 - no accepted intent creates `NaN`, infinity, an invalid ID, or an out-of-bounds position;
 - malformed behavior is isolated and reported;
+- desire-path agents remain finite, bounded, and outside obstacles while completing horizontal, vertical, and diagonal journeys through central, regular-grid, staggered-grid, and weighted multi-gate layouts;
 - reservation conflicts and expiries are stable once land exists.
 
 Browser checks should cover applying a behavior, a visible compactness trend change, worker recovery, resize without reset, mobile tabs, presentation mode, and all labeled controls.

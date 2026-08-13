@@ -30,6 +30,42 @@ function createEnvironmentEngine(overrides = {}) {
   });
 }
 
+function createGateEngine(destinations, overrides = {}) {
+  return new SimulationEngine({
+    behavior: zeroBehavior,
+    ruleKey: "weighted-gates",
+    seed: 8128,
+    population: 300,
+    width: 600,
+    height: 320,
+    params: {},
+    relationMode: "none",
+    environment: {
+      destinations,
+      journeys: { enabled: true, spawnAtDestinations: true, arrivalRadius: 30 },
+    },
+    ...overrides,
+  });
+}
+
+function sendEveryAgentTo(engine, destinationId) {
+  const destination = engine.environment.destinations.find(({ id }) => id === destinationId);
+  assert.ok(destination, `Missing test destination ${destinationId}`);
+  for (const agent of engine.agents) {
+    agent.destinationId = destinationId;
+    agent.x = destination.x;
+    agent.y = destination.y;
+    agent.vx = 0;
+    agent.vy = 0;
+  }
+}
+
+function routesByAgent(engine) {
+  return engine.agents
+    .map(({ id, destinationId, arrivalCount }) => ({ id, destinationId, arrivalCount }))
+    .sort((first, second) => first.id - second.id);
+}
+
 test("environment journeys and scalar field reset deterministically", () => {
   const engine = createEnvironmentEngine();
   engine.step(45);
@@ -54,7 +90,121 @@ test("arriving at a destination advances the goal and counts the trip", () => {
 
   assert.equal(engine.step().ok, true);
   assert.equal(engine.agents[0].destinationId, "west");
+  assert.equal(engine.agents[0].arrivalCount, 1);
   assert.equal(engine.metrics().trips, 1);
+});
+
+test("destination weights are normalized into canonical environment data", () => {
+  const engine = createGateEngine([
+    { id: "default", x: 80, y: 80 },
+    { id: "numeric-string", x: 300, y: 80, weight: "2.5" },
+    { id: "negative", x: 520, y: 80, weight: -7 },
+    { id: "invalid", x: 300, y: 240, weight: "many" },
+    { id: "null", x: 80, y: 240, weight: null },
+  ], { population: 12 });
+
+  assert.deepEqual(
+    engine.frame().environment.destinations.map(({ id, weight }) => [id, weight]),
+    [["default", 1], ["numeric-string", 2.5], ["negative", 0], ["invalid", 1], ["null", 1]],
+  );
+  assert.ok(Object.isFrozen(engine.environment.destinations[0]));
+});
+
+test("weighted journey routing excludes the current gate and zero-weight alternatives", () => {
+  const engine = createGateEngine([
+    { id: "origin", x: 80, y: 160, weight: 1 },
+    { id: "quiet", x: 260, y: 80, weight: 0 },
+    { id: "rare", x: 520, y: 80, weight: 1 },
+    { id: "busy", x: 520, y: 240, weight: 9 },
+  ]);
+  sendEveryAgentTo(engine, "origin");
+
+  assert.equal(engine.step().ok, true);
+  const counts = Object.fromEntries(engine.environment.destinations.map(({ id }) => [id, 0]));
+  for (const agent of engine.agents) counts[agent.destinationId] += 1;
+
+  assert.equal(counts.origin, 0);
+  assert.equal(counts.quiet, 0);
+  assert.ok(counts.rare > 0);
+  assert.ok(counts.busy > counts.rare * 4, JSON.stringify(counts));
+  assert.ok(engine.agents.every((agent) => agent.arrivalCount === 1));
+  assert.equal(engine.metrics().trips, engine.population);
+});
+
+test("all-zero alternatives use a deterministic uniform fallback", () => {
+  const destinations = [
+    { id: "origin", x: 80, y: 160, weight: 4 },
+    { id: "north", x: 300, y: 60, weight: 0 },
+    { id: "east", x: 520, y: 160, weight: 0 },
+    { id: "south", x: 300, y: 260, weight: 0 },
+  ];
+  const first = createGateEngine(destinations, { population: 180 });
+  const second = createGateEngine(destinations, { population: 180 });
+  sendEveryAgentTo(first, "origin");
+  sendEveryAgentTo(second, "origin");
+
+  first.step();
+  second.agents.reverse();
+  second.step();
+
+  assert.deepEqual(routesByAgent(first), routesByAgent(second));
+  assert.deepEqual(new Set(first.agents.map(({ destinationId }) => destinationId)), new Set(["east", "north", "south"]));
+  assert.equal(first.frame().checksum, second.frame().checksum);
+});
+
+test("weighted choices do not depend on destination declaration order", () => {
+  const destinations = [
+    { id: "origin", x: 80, y: 160, weight: 1 },
+    { id: "north", x: 300, y: 60, weight: 2 },
+    { id: "east", x: 520, y: 160, weight: 8 },
+    { id: "south", x: 300, y: 260, weight: 4 },
+  ];
+  const first = createGateEngine(destinations, { population: 120 });
+  const reordered = createGateEngine([destinations[2], destinations[0], destinations[3], destinations[1]], {
+    population: 120,
+  });
+  sendEveryAgentTo(first, "origin");
+  sendEveryAgentTo(reordered, "origin");
+
+  first.step();
+  reordered.step();
+
+  assert.deepEqual(routesByAgent(reordered), routesByAgent(first));
+});
+
+test("weighted routing replays after reset and changes with each arrival count", () => {
+  const destinations = [
+    { id: "west", x: 70, y: 160, weight: 1 },
+    { id: "north", x: 300, y: 60, weight: 2 },
+    { id: "east", x: 530, y: 160, weight: 7 },
+    { id: "south", x: 300, y: 260, weight: 3 },
+  ];
+  const engine = createGateEngine(destinations, { population: 90, seed: 441 });
+  const runArrivals = () => {
+    const result = [];
+    for (let arrival = 0; arrival < 4; arrival += 1) {
+      for (const agent of engine.agents) {
+        const destination = engine.environment.destinations.find(({ id }) => id === agent.destinationId);
+        agent.x = destination.x;
+        agent.y = destination.y;
+        agent.vx = 0;
+        agent.vy = 0;
+      }
+      assert.equal(engine.step().ok, true);
+      result.push(routesByAgent(engine));
+    }
+    return result;
+  };
+
+  const firstRun = runArrivals();
+  assert.ok(firstRun[0].some((route, index) => route.destinationId !== firstRun[1][index].destinationId));
+  assert.ok(engine.frame().agents.every(({ arrivalCount }) => arrivalCount === 4));
+  const checksum = engine.frame().checksum;
+
+  engine.reset();
+  const replay = runArrivals();
+  assert.deepEqual(replay, firstRun);
+  assert.equal(engine.frame().checksum, checksum);
 });
 
 test("circle agents cannot remain inside axis-aligned obstacles", () => {
@@ -115,6 +265,9 @@ test("journey and exact footfall state contribute to the checksum", () => {
   second.agents[0].destinationId = "west";
   assert.notEqual(first.frame().checksum, second.frame().checksum);
   second.agents[0].destinationId = "east";
+  second.agents[0].arrivalCount += 1;
+  assert.notEqual(first.frame().checksum, second.frame().checksum);
+  second.agents[0].arrivalCount -= 1;
   second.field.values[0] = Number.EPSILON;
   second.field.maximumDirty = true;
   assert.notEqual(first.frame().checksum, second.frame().checksum);

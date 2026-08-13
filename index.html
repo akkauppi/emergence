@@ -76,6 +76,50 @@
           </div>
         </div>
 
+        <section class="layout-editor" id="layout-editor" aria-labelledby="layout-editor-title" hidden>
+          <div class="layout-editor-heading">
+            <div>
+              <p class="eyebrow" id="layout-editor-title">Edit the walking ground</p>
+              <span class="layout-note">Layout edits restart the current run with the same seed.</span>
+            </div>
+            <p class="layout-status" id="layout-status" role="status" aria-live="polite">Preset layout</p>
+          </div>
+
+          <div class="layout-editor-controls">
+            <div class="layout-tool-group" role="toolbar" aria-label="Layout drawing tools">
+              <button class="layout-tool is-active" id="layout-tool-inspect" data-layout-tool="inspect" type="button" aria-pressed="true">Inspect</button>
+              <button class="layout-tool" id="layout-tool-block" data-layout-tool="block" type="button" aria-pressed="false">Block</button>
+              <button class="layout-tool" id="layout-tool-grid" data-layout-tool="grid" type="button" aria-pressed="false">Block grid</button>
+              <button class="layout-tool" id="layout-tool-gate" data-layout-tool="gate" type="button" aria-pressed="false">Gate</button>
+              <button class="layout-tool" id="layout-tool-erase" data-layout-tool="erase" type="button" aria-pressed="false">Erase</button>
+            </div>
+
+            <fieldset class="grid-options" id="layout-grid-options" disabled>
+              <legend class="sr-only">Block grid settings</legend>
+              <label for="layout-grid-rows">Rows</label>
+              <input id="layout-grid-rows" type="number" inputmode="numeric" min="2" max="8" step="1" value="3" />
+              <label for="layout-grid-columns">Columns</label>
+              <input id="layout-grid-columns" type="number" inputmode="numeric" min="2" max="8" step="1" value="4" />
+              <label for="layout-grid-gap">Street gap</label>
+              <input id="layout-grid-gap" type="number" inputmode="numeric" min="6" max="60" step="2" value="24" />
+            </fieldset>
+
+            <div class="layout-history-controls" aria-label="Layout history">
+              <button class="layout-action" id="layout-undo" type="button" disabled>Undo</button>
+              <button class="layout-action" id="layout-clear" type="button">Clear blocks</button>
+              <button class="layout-action" id="layout-restore" type="button">Restore layout</button>
+            </div>
+          </div>
+
+          <div class="gate-editor" aria-labelledby="gate-editor-title">
+            <div class="gate-editor-intro">
+              <strong id="gate-editor-title">Gates &amp; likelihood</strong>
+              <span>0 excludes a gate while another has a positive weight; all zero means equal choice.</span>
+            </div>
+            <div class="gate-list" id="gate-list"></div>
+          </div>
+        </section>
+
         <p class="sr-only" id="canvas-description" aria-live="polite">
           Simulation paused at tick 0.
         </p>

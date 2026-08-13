@@ -1,4 +1,11 @@
 import { CanvasRenderer } from "./canvas-renderer.js";
+import {
+  createBlockGrid,
+  gatePlacementConflict,
+  normalizeGate,
+  normalizeLayoutRect,
+  placementConflict,
+} from "./layout-tools.js";
 import { copyParameters, getScenario, scenarios } from "./scenarios.js";
 
 const element = (id) => document.getElementById(id);
@@ -16,6 +23,17 @@ const ui = {
   legendBItem: element("legend-b-item"),
   legendBLabel: element("legend-b-label"),
   canvasDescription: element("canvas-description"),
+  layoutEditor: element("layout-editor"),
+  layoutStatus: element("layout-status"),
+  layoutTools: [...document.querySelectorAll("[data-layout-tool]")],
+  layoutGridOptions: element("layout-grid-options"),
+  layoutGridRows: element("layout-grid-rows"),
+  layoutGridColumns: element("layout-grid-columns"),
+  layoutGridGap: element("layout-grid-gap"),
+  gateList: element("gate-list"),
+  layoutUndo: element("layout-undo"),
+  layoutClear: element("layout-clear"),
+  layoutRestore: element("layout-restore"),
   play: element("play-button"),
   playIcon: element("play-icon"),
   playLabel: element("play-label"),
@@ -80,6 +98,10 @@ const state = {
   pendingResumeSequence: null,
   interventions: [],
   perturbed: false,
+  environment: null,
+  layoutUndo: [],
+  layoutTool: "inspect",
+  layoutSettings: { rows: 3, columns: 4, gap: 24 },
 };
 
 const renderer = new CanvasRenderer(element("world-canvas"), {
@@ -87,6 +109,8 @@ const renderer = new CanvasRenderer(element("world-canvas"), {
   onDragStart: beginPerturbation,
   onPerturb: submitPerturbation,
   onDragCancel: cancelPerturbation,
+  onLayoutGesture: handleLayoutGesture,
+  onEnvironmentErase: handleEnvironmentErase,
 });
 
 for (const scenario of scenarios) {
@@ -94,6 +118,347 @@ for (const scenario of scenarios) {
   option.value = scenario.id;
   option.textContent = scenario.title;
   ui.scenario.append(option);
+}
+
+const WORLD_WIDTH = 1_000;
+const WORLD_HEIGHT = 650;
+const MAX_LAYOUT_UNDO = 30;
+const DESTINATION_CLEARANCE = 18;
+const DEFAULT_GATE_RADIUS = 34;
+const MIN_GATE_RADIUS = 18;
+const MAX_GATE_RADIUS = 70;
+const MINIMUM_GATE_COUNT = 2;
+
+function cloneEnvironment(environment) {
+  if (!environment) return null;
+  if (typeof structuredClone === "function") return structuredClone(environment);
+  return JSON.parse(JSON.stringify(environment));
+}
+
+function editableLayoutAvailable(scenario = state.scenario) {
+  return Boolean(scenario.editableLayout);
+}
+
+function boundedInteger(input, minimum, maximum, fallback) {
+  const value = Math.round(Number(input.value));
+  const bounded = Number.isFinite(value) ? Math.max(minimum, Math.min(maximum, value)) : fallback;
+  input.value = String(bounded);
+  return bounded;
+}
+
+function updateLayoutSettings() {
+  state.layoutSettings = {
+    rows: boundedInteger(ui.layoutGridRows, 2, 8, state.layoutSettings.rows),
+    columns: boundedInteger(ui.layoutGridColumns, 2, 8, state.layoutSettings.columns),
+    gap: boundedInteger(ui.layoutGridGap, 6, 60, state.layoutSettings.gap),
+  };
+  renderer.setLayoutTool(state.layoutTool, state.layoutSettings);
+}
+
+function setLayoutStatus(message, warning = false) {
+  ui.layoutStatus.textContent = message;
+  ui.layoutStatus.classList.toggle("is-warning", warning);
+}
+
+function setLayoutTool(tool) {
+  const nextTool = ["inspect", "block", "grid", "gate", "erase"].includes(tool) ? tool : "inspect";
+  state.layoutTool = nextTool;
+  for (const button of ui.layoutTools) {
+    const active = button.dataset.layoutTool === nextTool;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-pressed", String(active));
+  }
+  ui.layoutGridOptions.disabled = nextTool !== "grid";
+  updateLayoutSettings();
+  updateCanvasInstruction();
+}
+
+function updateLayoutUi() {
+  const available = editableLayoutAvailable();
+  ui.layoutEditor.hidden = !available;
+  ui.layoutUndo.disabled = state.layoutUndo.length === 0;
+  ui.layoutClear.disabled = !available || (state.environment?.obstacles?.length ?? 0) === 0;
+  ui.layoutRestore.disabled = !available;
+  renderGateEditors();
+  if (!available) setLayoutTool("inspect");
+}
+
+function rememberLayout() {
+  state.layoutUndo.push(cloneEnvironment(state.environment));
+  if (state.layoutUndo.length > MAX_LAYOUT_UNDO) state.layoutUndo.shift();
+}
+
+function nextObstaclePrefix() {
+  const used = new Set((state.environment?.obstacles || []).map((obstacle) => String(obstacle.id)));
+  let serial = 1;
+  while (used.has(`layout-${serial}`) || [...used].some((id) => id.startsWith(`layout-${serial}-`))) serial += 1;
+  return `layout-${serial}`;
+}
+
+function nextGateIdentity() {
+  const destinations = state.environment?.destinations || [];
+  const usedIds = new Set(destinations.map((destination) => String(destination.id)));
+  const usedLabels = new Set(destinations.map((destination) => String(destination.label).toLocaleLowerCase()));
+  let serial = 1;
+  while (usedIds.has(`gate-${serial}`) || usedLabels.has(`gate ${serial}`)) serial += 1;
+  return { id: `gate-${serial}`, label: `Gate ${serial}` };
+}
+
+function clampGateWeight(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 1;
+  return Math.max(0, Math.min(10, Math.round(numeric)));
+}
+
+function destinationWeight(destination) {
+  return clampGateWeight(destination?.weight ?? 1);
+}
+
+function renderGateEditors() {
+  ui.gateList.replaceChildren();
+  if (!editableLayoutAvailable()) return;
+  for (const destination of state.environment?.destinations || []) {
+    const row = document.createElement("div");
+    row.className = "gate-row";
+
+    const marker = document.createElement("span");
+    marker.className = "gate-marker";
+    marker.setAttribute("aria-hidden", "true");
+
+    const label = document.createElement("label");
+    label.className = "gate-field gate-label-field";
+    const labelCaption = document.createElement("span");
+    labelCaption.textContent = "Label";
+    const labelInput = document.createElement("input");
+    labelInput.type = "text";
+    labelInput.maxLength = 28;
+    labelInput.value = destination.label || String(destination.id);
+    labelInput.setAttribute("aria-label", `Label for ${labelInput.value}`);
+    labelInput.addEventListener("change", () => {
+      const nextLabel = labelInput.value.trim() || destination.label || String(destination.id);
+      updateDestination(destination.id, { label: nextLabel }, `Renamed gate to ${nextLabel}.`);
+    });
+    label.append(labelCaption, labelInput);
+
+    const weight = document.createElement("label");
+    weight.className = "gate-field gate-weight-field";
+    const weightCaption = document.createElement("span");
+    weightCaption.textContent = "Likelihood";
+    const weightInput = document.createElement("input");
+    weightInput.type = "number";
+    weightInput.inputMode = "numeric";
+    weightInput.min = "0";
+    weightInput.max = "10";
+    weightInput.step = "1";
+    weightInput.value = String(destinationWeight(destination));
+    weightInput.setAttribute("aria-label", `Likelihood for ${labelInput.value}, zero to ten`);
+    weightInput.addEventListener("change", () => {
+      const nextWeight = clampGateWeight(weightInput.value);
+      weightInput.value = String(nextWeight);
+      updateDestination(destination.id, { weight: nextWeight }, `${labelInput.value} likelihood set to ${nextWeight}.`);
+    });
+    weight.append(weightCaption, weightInput);
+
+    const coordinates = document.createElement("span");
+    coordinates.className = "gate-coordinates";
+    coordinates.textContent = `${Math.round(destination.x)}, ${Math.round(destination.y)}`;
+    coordinates.title = "Gate position in world units";
+
+    row.append(marker, label, weight, coordinates);
+    ui.gateList.append(row);
+  }
+}
+
+function updateDestination(id, patch, message) {
+  const environment = cloneEnvironment(state.environment);
+  const destination = environment?.destinations?.find((candidate) => String(candidate.id) === String(id));
+  if (!destination) {
+    setLayoutStatus("That gate is no longer in the layout.", true);
+    renderGateEditors();
+    return;
+  }
+  const changed = Object.entries(patch).some(([key, value]) => destination[key] !== value);
+  if (!changed) {
+    renderGateEditors();
+    return;
+  }
+  rememberLayout();
+  Object.assign(destination, patch);
+  commitLayout(environment, message);
+}
+
+function commitLayout(environment, message) {
+  state.environment = cloneEnvironment(environment);
+  clearInterventionState();
+  hideDiagnostic();
+  postWorldMutation({
+    type: "reconfigure",
+    population: state.population,
+    params: { ...state.params },
+    environment: cloneEnvironment(state.environment),
+  });
+  updateLayoutUi();
+  setLayoutStatus(message);
+}
+
+function layoutConflict(blocks, ignoredIds = []) {
+  return placementConflict(blocks, {
+    obstacles: state.environment?.obstacles || [],
+    destinations: state.environment?.destinations || [],
+    destinationClearance: DESTINATION_CLEARANCE,
+    minimumDestinationRadius: Number(state.environment?.journeys?.arrivalRadius) || 0,
+    ignoreIds: ignoredIds,
+  });
+}
+
+function describeConflict(conflict) {
+  if (!conflict) return "That layout cannot be placed here.";
+  if (conflict.type === "destination") return "Placement rejected: keep the destination gates clear.";
+  if (conflict.type === "obstacle") return "Placement rejected: blocks may touch, but cannot overlap.";
+  return "Placement rejected: choose a clear part of the walking ground.";
+}
+
+function findGatePlacementConflict(gate) {
+  const arrivalRadius = Number(state.environment?.journeys?.arrivalRadius) || 0;
+  return gatePlacementConflict(gate, {
+    obstacles: state.environment?.obstacles || [],
+    destinations: state.environment?.destinations || [],
+    obstacleClearance: Math.max(0, arrivalRadius - gate.radius),
+    minimumGateRadius: arrivalRadius,
+  });
+}
+
+function handleLayoutGesture(detail = {}) {
+  if (!editableLayoutAvailable() || !["block", "grid", "gate"].includes(detail.tool)) return;
+  if (detail.tool === "gate") {
+    const normalized = normalizeGate(detail, {
+      width: WORLD_WIDTH,
+      height: WORLD_HEIGHT,
+      defaultRadius: DEFAULT_GATE_RADIUS,
+      minRadius: MIN_GATE_RADIUS,
+      maxRadius: MAX_GATE_RADIUS,
+    });
+    if (!normalized) {
+      setLayoutStatus("Gate placement rejected: choose a point inside the world.", true);
+      return;
+    }
+    const identity = nextGateIdentity();
+    const gate = {
+      ...identity,
+      ...normalized,
+      weight: 1,
+    };
+    const conflict = findGatePlacementConflict(gate);
+    if (conflict) {
+      const message = conflict.type === "obstacle"
+        ? "Gate placement rejected: gates cannot overlap a block."
+        : "Gate placement rejected: leave space between the gates’ arrival zones.";
+      setLayoutStatus(message, true);
+      return;
+    }
+    rememberLayout();
+    const environment = cloneEnvironment(state.environment);
+    environment.destinations = [...(environment.destinations || []), gate];
+    commitLayout(environment, `Added ${gate.label} with likelihood 1.`);
+    return;
+  }
+
+  updateLayoutSettings();
+  const isGrid = detail.tool === "grid";
+  const bounds = normalizeLayoutRect(detail, {
+    width: WORLD_WIDTH,
+    height: WORLD_HEIGHT,
+    defaultWidth: isGrid ? 360 : 120,
+    defaultHeight: isGrid ? 270 : 100,
+    minSize: isGrid ? 60 : 24,
+  });
+  if (!bounds) {
+    setLayoutStatus("Placement rejected: draw a larger area.", true);
+    return;
+  }
+
+  const prefix = nextObstaclePrefix();
+  const blocks = isGrid
+    ? createBlockGrid(bounds, { ...state.layoutSettings, idPrefix: prefix })
+    : [{ id: prefix, ...bounds, label: "" }];
+  if (blocks.length === 0) {
+    setLayoutStatus("Placement rejected: enlarge the area or reduce the grid density.", true);
+    return;
+  }
+  const conflict = layoutConflict(blocks);
+  if (conflict) {
+    setLayoutStatus(describeConflict(conflict), true);
+    return;
+  }
+
+  rememberLayout();
+  const environment = cloneEnvironment(state.environment);
+  environment.obstacles = [...(environment.obstacles || []), ...blocks];
+  commitLayout(environment, isGrid
+    ? `Added ${blocks.length} blocks with ${state.layoutSettings.gap}-unit streets.`
+    : "Added one block.");
+}
+
+function eraseObstacle(id) {
+  if (!editableLayoutAvailable()) return;
+  const obstacles = state.environment?.obstacles || [];
+  const remaining = obstacles.filter((obstacle) => String(obstacle.id) !== String(id));
+  if (remaining.length === obstacles.length) {
+    setLayoutStatus("No block was removed.", true);
+    return;
+  }
+  rememberLayout();
+  const environment = cloneEnvironment(state.environment);
+  environment.obstacles = remaining;
+  commitLayout(environment, "Removed one block.");
+}
+
+function eraseDestination(id) {
+  if (!editableLayoutAvailable()) return;
+  const destinations = state.environment?.destinations || [];
+  if (destinations.length <= MINIMUM_GATE_COUNT) {
+    setLayoutStatus("Keep at least two gates so people still have a journey.", true);
+    return;
+  }
+  const removed = destinations.find((destination) => String(destination.id) === String(id));
+  if (!removed) {
+    setLayoutStatus("No gate was removed.", true);
+    return;
+  }
+  rememberLayout();
+  const environment = cloneEnvironment(state.environment);
+  environment.destinations = destinations.filter((destination) => String(destination.id) !== String(id));
+  commitLayout(environment, `Removed ${removed.label || "one gate"}.`);
+}
+
+function handleEnvironmentErase(detail = {}) {
+  if (detail.type === "destination") eraseDestination(detail.id);
+  else if (detail.type === "obstacle") eraseObstacle(detail.id);
+}
+
+function undoLayout() {
+  const previous = state.layoutUndo.pop();
+  if (!previous) return;
+  commitLayout(previous, "Undid the last layout edit.");
+}
+
+function clearLayout() {
+  if (!editableLayoutAvailable() || (state.environment?.obstacles?.length ?? 0) === 0) return;
+  rememberLayout();
+  const environment = cloneEnvironment(state.environment);
+  environment.obstacles = [];
+  commitLayout(environment, "Cleared all blocks.");
+}
+
+function restoreLayout() {
+  if (!editableLayoutAvailable()) return;
+  const preset = cloneEnvironment(state.scenario.environment);
+  if (JSON.stringify(preset) === JSON.stringify(state.environment)) {
+    setLayoutStatus("The preset layout is already restored.");
+    return;
+  }
+  rememberLayout();
+  commitLayout(preset, "Restored the preset layout.");
 }
 
 function workerConfiguration() {
@@ -105,7 +470,7 @@ function workerConfiguration() {
     height: 650,
     params: { ...state.params },
     relationMode: state.scenario.relationMode,
-    environment: state.scenario.environment ?? null,
+    environment: cloneEnvironment(state.environment),
     tempo: Number(ui.tempo.value),
   };
 }
@@ -321,6 +686,14 @@ function updateCanvasDescription(force = false) {
 function updateCanvasInstruction(mode = "default") {
   if (mode === "dragging") {
     ui.canvasInstruction.textContent = "Move this person, then release to watch the disturbance spread.";
+  } else if (editableLayoutAvailable() && state.layoutTool === "block") {
+    ui.canvasInstruction.textContent = "Drag to draw a block · click for a default-sized block · Esc to inspect.";
+  } else if (editableLayoutAvailable() && state.layoutTool === "grid") {
+    ui.canvasInstruction.textContent = "Drag district bounds to fill with blocks and streets · Esc to inspect.";
+  } else if (editableLayoutAvailable() && state.layoutTool === "gate") {
+    ui.canvasInstruction.textContent = "Click to add a gate · drag outward to choose its size · Esc to inspect.";
+  } else if (editableLayoutAvailable() && state.layoutTool === "erase") {
+    ui.canvasInstruction.textContent = "Click a block or gate to erase it · at least two gates must remain.";
   } else if (state.perturbed) {
     ui.canvasInstruction.textContent = "Manual perturbation applied · reset to reproduce the seeded run.";
   } else {
@@ -417,6 +790,7 @@ function renderParameterControls() {
         type: "reconfigure",
         population: state.population,
         params: { ...state.params },
+        environment: cloneEnvironment(state.environment),
       });
     });
     wrapper.append(label, output, input);
@@ -434,6 +808,9 @@ function formatParameter(value, definition = {}) {
 function loadScenario(scenario, { preserveSeed = true } = {}) {
   state.scenario = scenario;
   document.body.dataset.scenario = scenario.id;
+  state.environment = cloneEnvironment(scenario.environment);
+  state.layoutUndo = [];
+  state.layoutTool = "inspect";
   state.params = copyParameters(scenario);
   state.source = scenario.source;
   state.appliedSource = scenario.source;
@@ -476,10 +853,13 @@ function loadScenario(scenario, { preserveSeed = true } = {}) {
   ui.legendBLabel.textContent = hasJourneys ? "footfall" : "person B";
   ui.editor.value = scenario.source;
   renderer.setScenario(scenario.relationMode, state.params);
+  setLayoutTool("inspect");
   renderer.setSelected(0);
   updateLineNumbers();
   updateDirtyState();
   renderParameterControls();
+  updateLayoutUi();
+  setLayoutStatus(editableLayoutAvailable() ? "Preset layout" : "Layout editing unavailable");
   hideDiagnostic();
   startWorker();
 }
@@ -561,12 +941,24 @@ ui.step.addEventListener("click", () => postToCurrentWorld({ type: "step", count
 ui.reset.addEventListener("click", () => {
   hideDiagnostic();
   clearInterventionState();
-  postWorldMutation({ type: "reset", seed: state.seed, population: state.population, params: { ...state.params } });
+  postWorldMutation({
+    type: "reset",
+    seed: state.seed,
+    population: state.population,
+    params: { ...state.params },
+    environment: cloneEnvironment(state.environment),
+  });
 });
 ui.newSeed.addEventListener("click", () => {
   state.seed = (state.seed + 7_919) % 100_000;
   clearInterventionState();
-  postWorldMutation({ type: "reset", seed: state.seed, population: state.population, params: { ...state.params } });
+  postWorldMutation({
+    type: "reset",
+    seed: state.seed,
+    population: state.population,
+    params: { ...state.params },
+    environment: cloneEnvironment(state.environment),
+  });
 });
 ui.tempo.addEventListener("change", () => postToCurrentWorld({ type: "setTempo", tempo: Number(ui.tempo.value) }));
 ui.population.addEventListener("input", () => {
@@ -575,10 +967,25 @@ ui.population.addEventListener("input", () => {
 });
 ui.population.addEventListener("change", () => {
   clearInterventionState();
-  postWorldMutation({ type: "reconfigure", population: state.population, params: { ...state.params } });
+  postWorldMutation({
+    type: "reconfigure",
+    population: state.population,
+    params: { ...state.params },
+    environment: cloneEnvironment(state.environment),
+  });
 });
 ui.trails.addEventListener("change", () => renderer.setTrails(ui.trails.checked));
 ui.relations.addEventListener("change", () => renderer.setRelations(ui.relations.checked));
+for (const button of ui.layoutTools) {
+  button.addEventListener("click", () => setLayoutTool(button.dataset.layoutTool));
+}
+for (const input of [ui.layoutGridRows, ui.layoutGridColumns, ui.layoutGridGap]) {
+  input.addEventListener("input", updateLayoutSettings);
+  input.addEventListener("change", updateLayoutSettings);
+}
+ui.layoutUndo.addEventListener("click", undoLayout);
+ui.layoutClear.addEventListener("click", clearLayout);
+ui.layoutRestore.addEventListener("click", restoreLayout);
 ui.scenario.addEventListener("change", () => loadScenario(getScenario(ui.scenario.value)));
 ui.editor.addEventListener("input", () => {
   state.source = ui.editor.value;
@@ -608,6 +1015,7 @@ ui.restore.addEventListener("click", () => {
 ui.roadmapButton.addEventListener("click", () => ui.roadmapDialog.showModal());
 ui.presentation.addEventListener("click", () => {
   const enabled = document.body.classList.toggle("presentation-mode");
+  if (enabled) setLayoutTool("inspect");
   ui.presentation.innerHTML = enabled ? "<span aria-hidden=\"true\">×</span> Exit" : "<span aria-hidden=\"true\">↗</span> Present";
   window.setTimeout(() => renderer.draw(), 30);
 });
@@ -623,6 +1031,12 @@ for (const tab of document.querySelectorAll(".mobile-tab")) {
 }
 
 document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && state.layoutTool !== "inspect") {
+    setLayoutTool("inspect");
+    setLayoutStatus("Inspect tool selected.");
+    return;
+  }
+
   if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
     event.preventDefault();
     if (ui.editor.value !== state.appliedSource) applySource();

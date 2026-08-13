@@ -34,7 +34,7 @@ npm run check  # test and build
 - Stable, seeded choices of two reference people per agent
 - Editable JavaScript behavior with apply/reset and error reporting
 - Convergent, divergent, equidistant, two-sided triangle, chiral triangle, and wandering examples
-- A desire-path experiment with two destinations, a central obstruction, repeat trips, and a persistent footfall field
+- A desire-path experiment with editable weighted gates, blocks and block grids, repeat trips, and a persistent footfall field
 - Delayed sensing with visible historical-reference ghosts
 - Drag-to-perturb interventions that preserve the relationship network and simulation tick
 - Pause, single-step, same-seed reset, new seed, tempo, and population controls
@@ -48,13 +48,26 @@ same seed; then introduce reaction delay or drag one person and watch the distur
 propagate through hidden references. Seed, code, and parameters reproduce an untouched
 run. Drag events are recorded in memory for inspection; saved replay is a planned step.
 
-Then choose **Trace · reveal desire paths**. People repeatedly cross between the west
-and east gates while a rectangular block splits the direct route. Their footfalls form
-a scalar field that fades over time. The editable rule samples that field ahead and on
-both sides, allowing an established route to recruit later walkers. For a useful A/B
-demonstration, first run with **Trail influence** at `0`, reset with the same seed, then
-raise it to `1` or `2`. **Trace persistence** controls how long the shared spatial memory
-lasts. Trail concentration and its trend replace rule-match measurement in this preset.
+Then choose **Trace · reveal desire paths**. The preset begins with west and east gates,
+but people can make repeat trips among any number of gates in horizontal, vertical, or
+diagonal arrangements. Their footfalls form a scalar field that fades over time. The
+editable rule finds the next relevant block, scores four possible sides by detour and
+trace strength, and follows the better route. For a useful A/B demonstration, first run
+with **Trail influence** at `0`, reset with the same seed, then raise it to `1` or `2`.
+**Trace persistence** controls how long the shared spatial memory lasts. Trail
+concentration and its trend replace rule-match measurement in this preset.
+
+To edit the walking ground, pause the run and choose **Block** to drag one rectangle or
+**Block grid** to drag a whole arrangement; its rows, columns, and street gap can be set
+beside the tools. Choose **Gate** to click or drag a new destination, then edit its label
+and **Likelihood** from `0` to `10`. Relative likelihoods weight the next destination;
+the gate an agent just left is excluded. A zero excludes that gate while another choice
+has positive weight, while all eligible zeros fall back to equal choice. **Erase**
+removes a block or gate, while **Undo**, **Clear**, and **Restore layout** make quick
+comparisons safe. Every accepted layout or gate edit restarts at tick zero with the same
+seed and an empty footfall field. That keeps the people and starting conditions
+comparable while ensuring traces from the previous geometry do not contaminate the new
+one.
 
 The editor currently evaluates trusted classroom JavaScript in a disposable Web Worker. A worker prevents accidental code from freezing the page, but is not a security boundary; do not run untrusted shared code until the planned interpreter sandbox is added. Student rules should be pure: use only the values and helpers passed to `behave`, and use `random(key)` for seeded randomness. Journey rules additionally receive `destination`, read-only `destinations` and `obstacles`, plus `field.sample(point)` and `field.gradient(point, step)` for sensing accumulated footfall.
 

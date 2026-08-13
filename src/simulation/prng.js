@@ -55,6 +55,7 @@ function hashAgents(checksum, agents) {
     checksum = avalanche(checksum ^ hashPart(chosen[0] ?? -1));
     checksum = avalanche(checksum ^ hashPart(chosen[1] ?? -1));
     checksum = avalanche(checksum ^ hashPart(agent.destinationId ?? ""));
+    checksum = avalanche(checksum ^ hashPart(agent.arrivalCount ?? 0));
   }
   return checksum;
 }
