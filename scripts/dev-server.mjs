@@ -2,7 +2,7 @@ import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { createServer } from "node:http";
 import { networkInterfaces } from "node:os";
-import { extname, join, normalize } from "node:path";
+import { extname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
@@ -19,9 +19,11 @@ const mimeTypes = {
 const server = createServer(async (request, response) => {
   const pathname = decodeURIComponent(new URL(request.url, "http://localhost").pathname);
   const relativePath = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
-  const filePath = normalize(join(root, relativePath));
+  const filePath = resolve(root, relativePath);
+  const pathFromRoot = relative(root, filePath);
+  const hasPrivateSegment = relativePath.split("/").some((segment) => segment.startsWith("."));
 
-  if (!filePath.startsWith(root)) {
+  if (hasPrivateSegment || pathFromRoot.startsWith("..") || isAbsolute(pathFromRoot)) {
     response.writeHead(403).end("Forbidden");
     return;
   }

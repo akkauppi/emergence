@@ -8,6 +8,8 @@ const ui = {
   newSeed: element("new-seed-button"),
   tick: element("tick-value"),
   canvasStatus: element("canvas-status"),
+  canvasInstruction: element("canvas-instruction"),
+  canvasDelay: element("canvas-delay"),
   canvasDescription: element("canvas-description"),
   play: element("play-button"),
   playIcon: element("play-icon"),
@@ -49,18 +51,28 @@ const state = {
   source: "",
   appliedSource: "",
   pendingSource: null,
-  revision: 0,
+  pendingSourceRevision: null,
+  worldRevision: 0,
   running: false,
   frame: null,
   metricHistory: [],
   lastMetricTick: -1,
   worker: null,
-  lastPong: performance.now(),
+  workerGeneration: 0,
+  pendingPing: null,
   recovering: false,
+  dragWasRunning: false,
+  interventionSequence: 0,
+  pendingResumeSequence: null,
+  interventions: [],
+  perturbed: false,
 };
 
 const renderer = new CanvasRenderer(element("world-canvas"), {
   onSelect: () => updateCanvasDescription(true),
+  onDragStart: beginPerturbation,
+  onPerturb: submitPerturbation,
+  onDragCancel: cancelPerturbation,
 });
 
 for (const scenario of scenarios) {
@@ -79,24 +91,34 @@ function workerConfiguration() {
     height: 650,
     params: { ...state.params },
     relationMode: state.scenario.relationMode,
+    tempo: Number(ui.tempo.value),
   };
 }
 
 function startWorker({ recovered = false } = {}) {
   state.worker?.terminate();
-  state.worker = new Worker(new URL("./simulation/engine.worker.js", import.meta.url), { type: "module" });
-  state.lastPong = performance.now();
+  const worker = new Worker(new URL("./simulation/engine.worker.js", import.meta.url), { type: "module" });
+  const generation = state.workerGeneration + 1;
+  state.workerGeneration = generation;
+  state.worker = worker;
+  state.pendingPing = null;
   state.running = false;
   updateRunningUi();
-  state.worker.addEventListener("message", handleWorkerMessage);
-  state.worker.addEventListener("error", (event) => {
+  worker.addEventListener("message", (event) => handleWorkerMessage(event, generation));
+  worker.addEventListener("error", (event) => {
+    if (generation !== state.workerGeneration) return;
     showDiagnostic(`Worker error: ${event.message || "the simulation stopped unexpectedly"}`);
     state.running = false;
     updateRunningUi();
   });
-  post({ type: "initialize", config: workerConfiguration(), revision: state.revision });
+  post({
+    type: "initialize",
+    config: workerConfiguration(),
+    worldRevision: state.worldRevision,
+  });
 
   if (recovered) {
+    clearInterventionState();
     showDiagnostic("The last rule stopped responding. The simulation worker was restarted at tick 0; edit the rule before running it again.");
   }
 }
@@ -105,9 +127,25 @@ function post(message) {
   state.worker?.postMessage(message);
 }
 
-function handleWorkerMessage(event) {
+function postToCurrentWorld(message) {
+  post({ ...message, worldRevision: state.worldRevision });
+}
+
+function postWorldMutation(message) {
+  state.worldRevision += 1;
+  post({ ...message, worldRevision: state.worldRevision });
+  return state.worldRevision;
+}
+
+function handleWorkerMessage(event, generation) {
+  if (generation !== state.workerGeneration) return;
   const message = event.data || {};
-  state.lastPong = performance.now();
+
+  // A replaced world may still have frames/status events queued on the main
+  // thread. Only heartbeat replies are meaningful across world revisions.
+  const isPendingCompileResult = message.type === "compileResult"
+    && message.worldRevision === state.pendingSourceRevision;
+  if (message.type !== "pong" && message.worldRevision !== state.worldRevision && !isPendingCompileResult) return;
 
   switch (message.type) {
     case "frame":
@@ -125,7 +163,11 @@ function handleWorkerMessage(event) {
       updateRunningUi();
       showDiagnostic(formatRuntimeError(message.error));
       break;
+    case "interventionResult":
+      handleInterventionResult(message);
+      break;
     case "pong":
+      if (!state.pendingPing || message.nonce === state.pendingPing.nonce) state.pendingPing = null;
       break;
     default:
       break;
@@ -134,16 +176,21 @@ function handleWorkerMessage(event) {
 
 function handleCompileResult(message) {
   if (!message.ok) {
+    state.pendingSource = null;
+    state.pendingSourceRevision = null;
     showDiagnostic(message.message || "The rule could not be compiled.");
     ui.codeState.textContent = "Needs attention";
     ui.codeState.classList.add("is-dirty");
+    ui.apply.disabled = ui.editor.value === state.appliedSource;
     return;
   }
 
-  if (!message.initial && message.revision === state.revision && state.pendingSource !== null) {
+  if (!message.initial && message.worldRevision === state.pendingSourceRevision && state.pendingSource !== null) {
     state.appliedSource = state.pendingSource;
     state.pendingSource = null;
+    state.pendingSourceRevision = null;
     state.source = ui.editor.value;
+    if (message.worldRevision === state.worldRevision) clearInterventionState();
     hideDiagnostic();
     updateDirtyState();
   }
@@ -172,6 +219,16 @@ function renderMetrics(frame) {
   ui.spread.textContent = `${Math.round(frame.metrics.spread)} u`;
   ui.nearest.textContent = `${Math.round(frame.metrics.nearest)} u`;
   ui.match.textContent = frame.metrics.match === null ? "baseline" : `${Math.round(frame.metrics.match)}%`;
+  if (ui.canvasDelay) {
+    const configuredDelay = frame.configuredDelayTicks ?? frame.delayTicks ?? 0;
+    const observationAge = frame.observationAge ?? frame.delayTicks ?? 0;
+    ui.canvasDelay.hidden = configuredDelay === 0;
+    ui.canvasDelay.textContent = configuredDelay === 0
+      ? ""
+      : observationAge < configuredDelay
+        ? `delay ${configuredDelay}t · warming ${observationAge}t`
+        : `delay ${configuredDelay}t`;
+  }
   drawMetricHistory();
 }
 
@@ -210,9 +267,24 @@ function updateCanvasDescription(force = false) {
   const selection = selected
     ? ` Selected person ${selected.id} follows people ${selected.chosen[0]} and ${selected.chosen[1]}.`
     : "";
+  const configuredDelay = state.frame.configuredDelayTicks ?? state.frame.delayTicks ?? 0;
+  const observationAge = state.frame.observationAge ?? state.frame.delayTicks ?? 0;
+  const warmup = configuredDelay > observationAge ? `, currently ${observationAge} ticks of history` : "";
   ui.canvasDescription.textContent = `${state.scenario.shortTitle}. ${state.population} people. ${
     state.running ? "Running" : "Paused"
-  } at tick ${state.frame.tick}. Group spread ${Math.round(state.frame.metrics.spread)}.${selection}`;
+  } at tick ${state.frame.tick}. Group spread ${Math.round(state.frame.metrics.spread)}. Reaction delay ${
+    configuredDelay
+  } ticks${warmup}.${selection}${state.perturbed ? " A manual perturbation has been applied." : ""}`;
+}
+
+function updateCanvasInstruction(mode = "default") {
+  if (mode === "dragging") {
+    ui.canvasInstruction.textContent = "Move this person, then release to watch the disturbance spread.";
+  } else if (state.perturbed) {
+    ui.canvasInstruction.textContent = "Manual perturbation applied · reset to reproduce the seeded run.";
+  } else {
+    ui.canvasInstruction.textContent = "Click a person to inspect · drag a person to perturb the group.";
+  }
 }
 
 function showDiagnostic(message) {
@@ -240,7 +312,7 @@ function updateDirtyState() {
   const dirty = ui.editor.value !== state.appliedSource;
   ui.codeState.textContent = dirty ? "Modified · not applied" : "Applied at tick 0";
   ui.codeState.classList.toggle("is-dirty", dirty);
-  ui.apply.disabled = !dirty;
+  ui.apply.disabled = !dirty || state.pendingSource !== null;
 }
 
 function renderParameterControls() {
@@ -254,21 +326,53 @@ function renderParameterControls() {
     label.textContent = definition.label;
     const output = document.createElement("output");
     output.htmlFor = id;
-    output.textContent = formatParameter(state.params[definition.key]);
-    const input = document.createElement("input");
+    output.textContent = formatParameter(state.params[definition.key], definition);
+    let input;
+    if (definition.type === "select") {
+      input = document.createElement("select");
+      input.className = "parameter-select";
+      for (const optionDefinition of definition.options) {
+        const option = document.createElement("option");
+        option.value = String(optionDefinition.value);
+        option.textContent = optionDefinition.label;
+        input.append(option);
+      }
+      input.value = String(state.params[definition.key]);
+      output.textContent = definition.options.find(
+        (option) => String(option.value) === String(state.params[definition.key]),
+      )?.label || String(state.params[definition.key]);
+    } else {
+      input = document.createElement("input");
+      input.type = "range";
+      input.min = String(definition.min);
+      input.max = String(definition.max);
+      input.step = String(definition.step);
+      input.value = String(state.params[definition.key]);
+      if (definition.unit === "tick") {
+        input.title = `${formatParameter(state.params[definition.key], definition)} · ${(
+          Number(state.params[definition.key]) / 30
+        ).toFixed(2)} seconds`;
+      }
+    }
     input.id = id;
-    input.type = "range";
-    input.min = String(definition.min);
-    input.max = String(definition.max);
-    input.step = String(definition.step);
-    input.value = String(state.params[definition.key]);
-    input.addEventListener("input", () => {
-      state.params[definition.key] = Number(input.value);
-      output.textContent = formatParameter(state.params[definition.key]);
+    const updateParameter = () => {
+      const numericValue = Number(input.value);
+      state.params[definition.key] = Number.isFinite(numericValue) ? numericValue : input.value;
+      output.textContent = definition.type === "select"
+        ? input.selectedOptions[0]?.textContent || input.value
+        : formatParameter(state.params[definition.key], definition);
+      if (definition.unit === "tick") {
+        input.title = `${formatParameter(state.params[definition.key], definition)} · ${(
+          Number(state.params[definition.key]) / 30
+        ).toFixed(2)} seconds`;
+      }
       renderer.setScenario(state.scenario.relationMode, state.params);
-    });
+    };
+    if (definition.type !== "select") input.addEventListener("input", updateParameter);
     input.addEventListener("change", () => {
-      post({
+      updateParameter();
+      clearInterventionState();
+      postWorldMutation({
         type: "reconfigure",
         population: state.population,
         params: { ...state.params },
@@ -279,7 +383,8 @@ function renderParameterControls() {
   }
 }
 
-function formatParameter(value) {
+function formatParameter(value, definition = {}) {
+  if (definition.unit === "tick") return `${value} ${Number(value) === 1 ? "tick" : "ticks"}`;
   return Number.isInteger(value) ? String(value) : Number(value).toFixed(1);
 }
 
@@ -289,10 +394,12 @@ function loadScenario(scenario, { preserveSeed = true } = {}) {
   state.source = scenario.source;
   state.appliedSource = scenario.source;
   state.pendingSource = null;
-  state.revision += 1;
+  state.pendingSourceRevision = null;
+  state.worldRevision += 1;
   if (!preserveSeed) state.seed = 2026;
   state.metricHistory = [];
   state.lastMetricTick = -1;
+  clearInterventionState();
 
   ui.scenario.value = scenario.id;
   ui.lessonKicker.textContent = scenario.kicker;
@@ -318,39 +425,97 @@ function loadScenario(scenario, { preserveSeed = true } = {}) {
 }
 
 function togglePlayback() {
-  if (state.running) post({ type: "pause" });
-  else post({ type: "play" });
+  if (state.running) postToCurrentWorld({ type: "pause" });
+  else postToCurrentWorld({ type: "play" });
 }
 
 function applySource() {
-  state.revision += 1;
+  if (state.pendingSource !== null) return;
   state.pendingSource = ui.editor.value;
   ui.codeState.textContent = "Checking…";
   ui.codeState.classList.add("is-dirty");
-  post({
+  ui.apply.disabled = true;
+  state.pendingSourceRevision = postWorldMutation({
     type: "applySource",
     source: state.pendingSource,
-    revision: state.revision,
   });
 }
 
+function beginPerturbation() {
+  state.dragWasRunning = state.running;
+  if (state.running) postToCurrentWorld({ type: "pause" });
+  updateCanvasInstruction("dragging");
+}
+
+function submitPerturbation(agentId, position) {
+  const sequence = state.interventionSequence + 1;
+  state.interventionSequence = sequence;
+  state.pendingResumeSequence = state.dragWasRunning ? sequence : null;
+  postWorldMutation({
+    type: "perturbAgent",
+    agentId,
+    position,
+    sequence,
+  });
+}
+
+function cancelPerturbation() {
+  if (state.dragWasRunning) postToCurrentWorld({ type: "play" });
+  state.dragWasRunning = false;
+  updateCanvasInstruction();
+}
+
+function handleInterventionResult(message) {
+  // The worker returns the mutation and its exact frame in one message. Render
+  // that frame before acknowledging the intervention by resuming playback.
+  if (message.frame) receiveFrame(message.frame);
+
+  if (!message.ok) {
+    renderer.cancelPerturbationPreview();
+    showDiagnostic(message.message || "The perturbation could not be applied.");
+  } else {
+    state.interventions.push(message.intervention);
+    state.perturbed = true;
+    hideDiagnostic();
+  }
+
+  if (state.pendingResumeSequence === message.sequence) postToCurrentWorld({ type: "play" });
+  state.pendingResumeSequence = null;
+  state.dragWasRunning = false;
+  updateCanvasInstruction();
+  updateCanvasDescription(true);
+}
+
+function clearInterventionState() {
+  state.interventionSequence = 0;
+  state.pendingResumeSequence = null;
+  state.interventions = [];
+  state.perturbed = false;
+  state.dragWasRunning = false;
+  renderer.cancelPerturbationPreview();
+  updateCanvasInstruction();
+}
+
 ui.play.addEventListener("click", togglePlayback);
-ui.step.addEventListener("click", () => post({ type: "step", count: 1 }));
+ui.step.addEventListener("click", () => postToCurrentWorld({ type: "step", count: 1 }));
 ui.reset.addEventListener("click", () => {
   hideDiagnostic();
-  post({ type: "reset", seed: state.seed, population: state.population, params: { ...state.params } });
+  clearInterventionState();
+  postWorldMutation({ type: "reset", seed: state.seed, population: state.population, params: { ...state.params } });
 });
 ui.newSeed.addEventListener("click", () => {
   state.seed = (state.seed + 7_919) % 100_000;
-  post({ type: "reset", seed: state.seed, population: state.population, params: { ...state.params } });
+  clearInterventionState();
+  postWorldMutation({ type: "reset", seed: state.seed, population: state.population, params: { ...state.params } });
 });
-ui.tempo.addEventListener("change", () => post({ type: "setTempo", tempo: Number(ui.tempo.value) }));
+ui.tempo.addEventListener("change", () => postToCurrentWorld({ type: "setTempo", tempo: Number(ui.tempo.value) }));
 ui.population.addEventListener("input", () => {
   state.population = Number(ui.population.value);
   ui.populationValue.textContent = String(state.population);
 });
 ui.population.addEventListener("change", () => {
-  post({ type: "reconfigure", population: state.population, params: { ...state.params } });
+  clearInterventionState();
+  postWorldMutation({ type: "reconfigure", population: state.population, params: { ...state.params } });
 });
 ui.trails.addEventListener("change", () => renderer.setTrails(ui.trails.checked));
 ui.relations.addEventListener("change", () => renderer.setRelations(ui.relations.checked));
@@ -414,7 +579,7 @@ document.addEventListener("keydown", (event) => {
 window.setInterval(() => {
   if (document.visibilityState !== "visible" || state.recovering) return;
   const now = performance.now();
-  if (now - state.lastPong > 1_800) {
+  if (state.pendingPing && now - state.pendingPing.sentAt > 1_800) {
     state.recovering = true;
     startWorker({ recovered: true });
     window.setTimeout(() => {
@@ -422,8 +587,21 @@ window.setInterval(() => {
     }, 500);
     return;
   }
-  post({ type: "ping", nonce: now });
+  if (!state.pendingPing) {
+    const nonce = `${state.workerGeneration}:${now}`;
+    state.pendingPing = { nonce, sentAt: now };
+    post({ type: "ping", nonce });
+  }
 }, 500);
+
+document.addEventListener("visibilitychange", () => {
+  state.pendingPing = null;
+  if (document.visibilityState === "visible") {
+    const nonce = `${state.workerGeneration}:${performance.now()}`;
+    state.pendingPing = { nonce, sentAt: performance.now() };
+    post({ type: "ping", nonce });
+  }
+});
 
 state.params = copyParameters(state.scenario);
 state.source = state.scenario.source;

@@ -61,10 +61,13 @@
           <canvas id="world-canvas" aria-label="Agent simulation playground"></canvas>
           <div class="canvas-topline" aria-hidden="true">
             <span class="status-pill" id="canvas-status"><i></i> Paused</span>
-            <span class="tick-pill">tick <strong id="tick-value">0</strong></span>
+            <span class="canvas-badges">
+              <span class="delay-pill" id="canvas-delay" hidden>delay 0t</span>
+              <span class="tick-pill">tick <strong id="tick-value">0</strong></span>
+            </span>
           </div>
           <p class="canvas-instruction" id="canvas-instruction">
-            Select an agent to reveal the people shaping its movement.
+            Click a person to inspect · drag a person to perturb the group.
           </p>
           <div class="canvas-legend" id="canvas-legend" aria-hidden="true">
             <span><i class="legend-self"></i> selected</span>
@@ -94,10 +97,13 @@
               <strong id="match-value">—</strong>
               <small id="match-label">relationship satisfied</small>
             </div>
-            <svg id="metric-chart" viewBox="0 0 132 42" role="img" aria-label="Recent group spread">
-              <path class="chart-baseline" d="M1 40.5 H131"></path>
-              <polyline id="metric-line" points=""></polyline>
-            </svg>
+            <div class="metric-chart-wrap">
+              <span>Spread trend</span>
+              <svg id="metric-chart" viewBox="0 0 132 42" role="img" aria-label="Recent group spread">
+                <path class="chart-baseline" d="M1 40.5 H131"></path>
+                <polyline id="metric-line" points=""></polyline>
+              </svg>
+            </div>
           </article>
         </div>
 
@@ -192,10 +198,12 @@
             <span aria-hidden="true">＋</span>
           </summary>
           <div class="api-content">
-            <p><code>self</code> is the current person. <code>chosen</code> contains their two stable references.</p>
+            <p><code>self</code> is the current person. <code>sense(delay).chosen</code> contains their two stable references at an earlier observation tick.</p>
             <dl>
               <div><dt><code>vec.seek(self, target, strength)</code></dt><dd>steer toward a point</dd></div>
               <div><dt><code>vec.midpoint(a, b)</code></dt><dd>point halfway between</dd></div>
+              <div><dt><code>vec.equilateral(a, b, side)</code></dt><dd>third triangle corner</dd></div>
+              <div><dt><code>sense(ticksAgo)</code></dt><dd>read past positions</dd></div>
               <div><dt><code>random(key)</code></dt><dd>seeded value from 0 to 1</dd></div>
             </dl>
             <p class="trust-note">Prototype note: run only code you trust. The worker protects the interface from accidental loops, but it is not a security sandbox.</p>

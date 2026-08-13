@@ -42,18 +42,59 @@ export function randomInteger(seed, minimum, maximumExclusive, ...parts) {
   return minimum + Math.floor(keyedRandom(seed, ...parts) * span);
 }
 
-export function stateChecksum(agents, tick = 0) {
-  let checksum = avalanche(tick);
+function hashAgents(checksum, agents) {
   const quantize = (value) => Math.round(value * 1_000);
 
-  for (const agent of agents) {
+  for (const agent of [...agents].sort((a, b) => a.id - b.id)) {
     checksum = avalanche(checksum ^ hashPart(agent.id));
-    checksum = avalanche(checksum ^ hashPart(quantize(agent.x)));
-    checksum = avalanche(checksum ^ hashPart(quantize(agent.y)));
-    checksum = avalanche(checksum ^ hashPart(quantize(agent.vx)));
-    checksum = avalanche(checksum ^ hashPart(quantize(agent.vy)));
-    checksum = avalanche(checksum ^ hashPart(agent.chosen[0]));
-    checksum = avalanche(checksum ^ hashPart(agent.chosen[1]));
+    checksum = avalanche(checksum ^ hashPart(quantize(agent.x ?? agent.position?.x)));
+    checksum = avalanche(checksum ^ hashPart(quantize(agent.y ?? agent.position?.y)));
+    checksum = avalanche(checksum ^ hashPart(quantize(agent.vx ?? agent.velocity?.x ?? 0)));
+    checksum = avalanche(checksum ^ hashPart(quantize(agent.vy ?? agent.velocity?.y ?? 0)));
+    const chosen = agent.chosen || [];
+    checksum = avalanche(checksum ^ hashPart(chosen[0] ?? -1));
+    checksum = avalanche(checksum ^ hashPart(chosen[1] ?? -1));
+  }
+  return checksum;
+}
+
+function hashCanonicalValue(checksum, value) {
+  if (value === null) return avalanche(checksum ^ hashPart("null"));
+
+  if (Array.isArray(value)) {
+    checksum = avalanche(checksum ^ hashPart(`array:${value.length}`));
+    for (const item of value) checksum = hashCanonicalValue(checksum, item);
+    return checksum;
+  }
+
+  if (typeof value === "object") {
+    const keys = Object.keys(value).sort();
+    checksum = avalanche(checksum ^ hashPart(`object:${keys.length}`));
+    for (const key of keys) {
+      checksum = avalanche(checksum ^ hashPart(`key:${key}`));
+      checksum = hashCanonicalValue(checksum, value[key]);
+    }
+    return checksum;
+  }
+
+  return avalanche(checksum ^ hashPart(`${typeof value}:${String(value)}`));
+}
+
+export function stateChecksum(agents, tick = 0, hiddenState = {}) {
+  let checksum = avalanche(tick);
+  checksum = hashAgents(checksum, agents);
+  checksum = avalanche(checksum ^ hashPart(hiddenState.eventCursor ?? 0));
+  checksum = avalanche(checksum ^ hashPart(hiddenState.delayTicks ?? 0));
+
+  for (const snapshot of hiddenState.history || []) {
+    checksum = avalanche(checksum ^ hashPart(snapshot.tick));
+    checksum = snapshot.fingerprint === undefined
+      ? hashAgents(checksum, snapshot.views)
+      : avalanche(checksum ^ hashPart(snapshot.fingerprint));
+  }
+
+  if (hiddenState.configuration !== undefined) {
+    checksum = hashCanonicalValue(checksum, hiddenState.configuration);
   }
 
   return checksum.toString(16).padStart(8, "0");

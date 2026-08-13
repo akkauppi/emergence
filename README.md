@@ -33,12 +33,20 @@ npm run check  # test and build
 - Simultaneous updates, so array order does not decide the result
 - Stable, seeded choices of two reference people per agent
 - Editable JavaScript behavior with apply/reset and error reporting
-- Convergent, divergent, equidistant, and wandering examples
+- Convergent, divergent, equidistant, two-sided triangle, chiral triangle, and wandering examples
+- Delayed sensing with visible historical-reference ghosts
+- Drag-to-perturb interventions that preserve the relationship network and simulation tick
 - Pause, single-step, same-seed reset, new seed, tempo, and population controls
 - Trails, inspectable relationships, and live spatial metrics
 - Responsive classroom/projector layout and presentation mode
 - A worker watchdog that recovers the interface from accidental infinite loops
 
-The editor currently evaluates trusted classroom JavaScript in a disposable Web Worker. A worker prevents accidental code from freezing the page, but is not a security boundary; do not run untrusted shared code until the planned interpreter sandbox is added.
+Try the dynamics in this order: run the two-sided triangle and ask whether all local
+triangles can be satisfied; compare it with the shared-side chiral triangle using the
+same seed; then introduce reaction delay or drag one person and watch the disturbance
+propagate through hidden references. Seed, code, and parameters reproduce an untouched
+run. Drag events are recorded in memory for inspection; saved replay is a planned step.
+
+The editor currently evaluates trusted classroom JavaScript in a disposable Web Worker. A worker prevents accidental code from freezing the page, but is not a security boundary; do not run untrusted shared code until the planned interpreter sandbox is added. Student rules should be pure: use only the values and helpers passed to `behave`, and use `random(key)` for seeded randomness.
 
 See [docs/PLAN.md](docs/PLAN.md) for the product, teaching, architecture, and urban-growth roadmap.

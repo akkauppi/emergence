@@ -24,7 +24,15 @@ The engine adds a small collision response as a physical constraint, analogous t
 Two supporting presets help separate the ingredients:
 
 - **Equal distance:** approach the perpendicular bisector of the selected pair without requiring the agent to stand between them.
+- **Complete a triangle:** approach the nearer third corner of an equilateral triangle, exposing geometric frustration when overlapping local goals conflict.
+- **Chiral triangle:** always use the same side of the ordered A→B base, showing how a small shared convention can break symmetry and create circulation.
 - **Seeded wander:** a null model for distinguishing structured emergence from random motion and boundary effects.
+
+All social presets can read earlier observations through `sense(delayTicks)`. A selected
+agent shows those delayed references as ghosts, making the model's information lag
+visible. Dragging a person creates one atomic intervention at a recorded tick, zeros
+their velocity, preserves their relationships, and then lets the cascade continue.
+The current slice records intervention metadata but does not yet export or replay it.
 
 ## 3. MVP scope and acceptance criteria
 
@@ -79,7 +87,11 @@ function behave({ self, chosen, params, vec, random, tick, world }) {
 }
 ```
 
-Code cannot mutate canonical state. Movement is only the first intent family. The same boundary will later accept validated `emitField`, `reserveLand`, `claimLand`, `build`, and `connect` intents.
+Code cannot mutate canonical state through this API. Student rules follow a pure-function
+contract and should use only their arguments; the current JavaScript runtime is not a
+security boundary and cannot enforce purity against deliberately hostile code. Movement
+is only the first intent family. The same boundary will later accept validated
+`emitField`, `reserveLand`, `claimLand`, `build`, and `connect` intents.
 
 ### Runtime safety path
 
@@ -156,6 +168,7 @@ Conflicting actions are grouped by target and resolved centrally. A reservation 
 ### 0.1 — Classroom movement slice
 
 - Current playground, presets, editor, metrics, deterministic reset, responsive layout
+- Equilateral/chiral geometry, delayed sensing, and recorded drag perturbations
 - Add saved JSON run export/import and a checksum
 - Add an A/B split view using the same seed
 - Add cluster count and an annotated metric chart

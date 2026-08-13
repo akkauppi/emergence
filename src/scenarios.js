@@ -1,4 +1,5 @@
-const convergeSource = `function behave({ self, chosen, params, vec }) {
+const convergeSource = `function behave({ self, params, vec, sense }) {
+  const { chosen } = sense(params.delayTicks);
   const [personA, personB] = chosen;
 
   // Put yourself halfway between the same two people.
@@ -16,7 +17,8 @@ const convergeSource = `function behave({ self, chosen, params, vec }) {
   };
 }`;
 
-const shieldSource = `function behave({ self, chosen, params, vec }) {
+const shieldSource = `function behave({ self, params, vec, sense }) {
+  const { chosen } = sense(params.delayTicks);
   const [person, shield] = chosen;
 
   // Stand beyond the shield, away from the person.
@@ -38,7 +40,8 @@ const shieldSource = `function behave({ self, chosen, params, vec }) {
   };
 }`;
 
-const equidistantSource = `function behave({ self, chosen, params, vec }) {
+const equidistantSource = `function behave({ self, params, vec, sense }) {
+  const { chosen } = sense(params.delayTicks);
   const [personA, personB] = chosen;
   const midpoint = vec.midpoint(
     personA.position,
@@ -53,6 +56,40 @@ const equidistantSource = `function behave({ self, chosen, params, vec }) {
   const target = vec.subtract(
     self.position,
     vec.scale(axis, vec.dot(offset, axis))
+  );
+
+  return {
+    acceleration: vec.seek(self, target, params.strength)
+  };
+}`;
+
+const nearestTriangleSource = `function behave({ self, params, vec, sense }) {
+  const { chosen } = sense(params.delayTicks);
+  const [personA, personB] = chosen;
+
+  // Two equilateral triangles fit the same base.
+  // Choose whichever third corner is nearer to you.
+  const target = vec.nearestEquilateral(
+    self.position,
+    personA.position,
+    personB.position,
+    self.id % 2 === 0 ? 1 : -1
+  );
+
+  return {
+    acceleration: vec.seek(self, target, params.strength)
+  };
+}`;
+
+const chiralTriangleSource = `function behave({ self, params, vec, sense }) {
+  const { chosen } = sense(params.delayTicks);
+  const [personA, personB] = chosen;
+
+  // The order A → B matters. Everyone uses the same side.
+  const target = vec.equilateral(
+    personA.position,
+    personB.position,
+    params.chirality
   );
 
   return {
@@ -89,11 +126,13 @@ export const scenarios = [
       strength: 2.4,
       maxSpeed: 88,
       personalSpace: 5,
+      delayTicks: 0,
     },
     controls: [
       { key: "strength", label: "Response strength", min: 0.4, max: 4, step: 0.1 },
       { key: "maxSpeed", label: "Walking speed", min: 30, max: 150, step: 2 },
       { key: "personalSpace", label: "Personal space", min: 0, max: 18, step: 1 },
+      { key: "delayTicks", label: "Reaction delay", min: 0, max: 30, step: 1, unit: "tick" },
     ],
   },
   {
@@ -113,11 +152,13 @@ export const scenarios = [
       extension: 1,
       maxSpeed: 96,
       personalSpace: 5,
+      delayTicks: 0,
     },
     controls: [
       { key: "strength", label: "Response strength", min: 0.4, max: 4, step: 0.1 },
       { key: "extension", label: "Distance beyond shield", min: 0.2, max: 1.8, step: 0.1 },
       { key: "maxSpeed", label: "Walking speed", min: 30, max: 150, step: 2 },
+      { key: "delayTicks", label: "Reaction delay", min: 0, max: 30, step: 1, unit: "tick" },
     ],
   },
   {
@@ -136,11 +177,72 @@ export const scenarios = [
       strength: 2.1,
       maxSpeed: 82,
       personalSpace: 5,
+      delayTicks: 0,
     },
     controls: [
       { key: "strength", label: "Response strength", min: 0.4, max: 4, step: 0.1 },
       { key: "maxSpeed", label: "Walking speed", min: 30, max: 150, step: 2 },
       { key: "personalSpace", label: "Personal space", min: 0, max: 18, step: 1 },
+      { key: "delayTicks", label: "Reaction delay", min: 0, max: 30, step: 1, unit: "tick" },
+    ],
+  },
+  {
+    id: "triangle-nearest",
+    title: "Geometry · complete a triangle",
+    shortTitle: "Complete an equilateral triangle",
+    kicker: "Geometric frustration",
+    description:
+      "Each person chooses two others and moves toward the nearer point that would complete an equilateral triangle. Every target is simple, but the overlapping triangles may be impossible to satisfy at once.",
+    steps: ["Choose two people", "Imagine both third corners", "Move toward the nearer one"],
+    question: "Before running: can everyone complete their triangle at once, or will conflicting targets keep the group moving?",
+    relationMode: "equilateral-nearest",
+    matchLabel: "near an equilateral corner",
+    source: nearestTriangleSource,
+    params: {
+      strength: 2.2,
+      maxSpeed: 88,
+      personalSpace: 5,
+      delayTicks: 0,
+    },
+    controls: [
+      { key: "strength", label: "Response strength", min: 0.4, max: 4, step: 0.1 },
+      { key: "maxSpeed", label: "Walking speed", min: 30, max: 150, step: 2 },
+      { key: "personalSpace", label: "Personal space", min: 0, max: 18, step: 1 },
+      { key: "delayTicks", label: "Reaction delay", min: 0, max: 30, step: 1, unit: "tick" },
+    ],
+  },
+  {
+    id: "triangle-chiral",
+    title: "Chiral · choose one shared side",
+    shortTitle: "Complete a one-sided triangle",
+    kicker: "Broken symmetry",
+    description:
+      "Each person uses the ordered line from A to B and chooses the same side for the third corner. One shared left–right convention can turn restless local triangles into collective circulation.",
+    steps: ["Choose A, then B", "Use one shared side of A → B", "Move toward the third corner"],
+    question: "Before running: can one tiny directional convention make the whole group rotate? Flip it using the side control.",
+    relationMode: "equilateral",
+    matchLabel: "near the chosen triangle corner",
+    source: chiralTriangleSource,
+    params: {
+      strength: 2.2,
+      chirality: 1,
+      maxSpeed: 88,
+      personalSpace: 5,
+      delayTicks: 0,
+    },
+    controls: [
+      { key: "strength", label: "Response strength", min: 0.4, max: 4, step: 0.1 },
+      {
+        key: "chirality",
+        label: "Shared side",
+        type: "select",
+        options: [
+          { value: 1, label: "Clockwise" },
+          { value: -1, label: "Counterclockwise" },
+        ],
+      },
+      { key: "maxSpeed", label: "Walking speed", min: 30, max: 150, step: 2 },
+      { key: "delayTicks", label: "Reaction delay", min: 0, max: 30, step: 1, unit: "tick" },
     ],
   },
   {
