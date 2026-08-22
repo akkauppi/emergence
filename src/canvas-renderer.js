@@ -6,7 +6,12 @@ import {
   pointInCircle,
   pointInRect,
 } from "./layout-tools.js";
-import { drawTerritory, landCellAtPoint, resolveLandGrid } from "./territory-renderer.js";
+import {
+  drawCirculationRoute,
+  drawTerritoryLayers,
+  landCellAtPoint,
+  resolveLandGrid,
+} from "./territory-renderer.js";
 
 const COLORS = {
   background: "#142137",
@@ -168,7 +173,7 @@ export class CanvasRenderer {
     this.lastEventCursor = 0;
     this.selectedId = 0;
     this.selectedLandId = null;
-    this.landVisible = true;
+    this.tenureVisible = true;
     this.trailsEnabled = true;
     this.relationsEnabled = true;
     this.relationMode = "midpoint";
@@ -239,7 +244,11 @@ export class CanvasRenderer {
   }
 
   setLandVisible(enabled) {
-    this.landVisible = Boolean(enabled);
+    this.setTenureVisible(enabled);
+  }
+
+  setTenureVisible(enabled) {
+    this.tenureVisible = Boolean(enabled);
     this.draw();
   }
 
@@ -346,15 +355,15 @@ export class CanvasRenderer {
     context.scale(this.viewport.scale, this.viewport.scale);
     this.#drawScalarField(context);
     this.#drawGrid(context);
-    if (this.landVisible) {
-      drawTerritory(context, this.frame, {
-        scale: this.viewport.scale,
-        selectedLandId: this.selectedLandId,
-      });
-    }
+    drawTerritoryLayers(context, this.frame, {
+      scale: this.viewport.scale,
+      selectedLandId: this.selectedLandId,
+      tenureVisible: this.tenureVisible,
+    });
     this.#drawEnvironment(context);
     this.#drawTrails(context);
     if (this.relationsEnabled) this.#drawRelations(context);
+    drawCirculationRoute(context, this.#agentById(this.selectedId), { scale: this.viewport.scale });
     this.#drawAgents(context);
     this.#drawLayoutOverlay(context);
     context.restore();
@@ -972,7 +981,7 @@ export class CanvasRenderer {
   }
 
   #hitTestLand(point) {
-    return this.landVisible ? landCellAtPoint(this.frame, point) : null;
+    return landCellAtPoint(this.frame, point);
   }
 
   #handlePointerDown(event) {

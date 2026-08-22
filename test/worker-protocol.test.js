@@ -99,7 +99,7 @@ test("journey behavior receives its environment after worker reset", () => {
   assert.equal(Number.isFinite(stepMessages.at(-1).frame.metrics.trailConcentration), true);
 });
 
-test("territory worlds mature claims, reset cleanly, and replay under worker revisions", () => {
+test("territory worker frames clone, grow emergent streets, reset, and replay", () => {
   const scenario = getScenario("territory-growth");
   const beforeInitialize = messages.length;
   send({
@@ -136,39 +136,45 @@ test("territory worlds mature claims, reset cleanly, and replay under worker rev
       cellSize: initialFrame.land.geometry.cellSize,
       gap: initialFrame.land.geometry.gap,
     },
-    { x: 140, y: 84, columns: 19, rows: 12, cellSize: 36, gap: 2 },
+    { x: 20, y: 10, columns: 24, rows: 15, cellSize: 40, gap: 0 },
   );
   assert.deepEqual(initialFrame.land.policy, scenario.environment.land.policy);
-  assert.equal(initialFrame.land.cells.length, 19 * 12);
+  assert.equal(initialFrame.land.cells.length, 24 * 15);
   assert.ok(initialFrame.land.cells.every((cell) => cell.state === "unclaimed"));
   assert.ok(initialFrame.land.cells.every((cell) => Number.isFinite(cell.access)));
   assert.deepEqual(initialFrame.land.events, []);
+  assert.equal(initialFrame.circulation.kind, "emergent-cell-network");
+  assert.equal(initialFrame.circulation.cells.length, initialFrame.land.cells.length);
+  assert.equal(initialFrame.circulation.entries.length, 2);
+  assert.deepEqual(
+    initialFrame.circulation.cells
+      .filter((cell) => cell.role !== "open")
+      .map((cell) => cell.id)
+      .sort(),
+    initialFrame.circulation.entries.map((entry) => entry.landId).sort(),
+  );
+  assert.equal(initialFrame.circulation.edges.length, 0);
+  assert.doesNotThrow(() => structuredClone(initialFrame.circulation));
+  assert.deepEqual(structuredClone(initialFrame.circulation), initialFrame.circulation);
   assert.equal(initialFrame.metrics.claimedCells, 0);
   assert.equal(initialFrame.metrics.landConflicts, 0);
+  assert.equal(initialFrame.metrics.roadCells, 2);
+  assert.equal(initialFrame.metrics.roadReservedCells, 0);
 
-  const beforeWaiting = messages.length;
-  send({ type: "step", worldRevision: 5, count: 19 });
-  const waitingMessages = messages.slice(beforeWaiting);
-  assert.equal(waitingMessages.some((message) => message.type === "runtimeError"), false);
-  const waitingFrame = waitingMessages.at(-1).frame;
-  assert.equal(waitingFrame.tick, 19);
-  assert.equal(waitingFrame.metrics.claimedCells, 0);
-  assert.ok(waitingFrame.metrics.reservedCells > 0);
-  assert.ok(waitingFrame.metrics.landConflicts > 0);
-  assert.ok(waitingFrame.land.cells.some((cell) => cell.state === "reserved"));
-
-  const beforeMaturity = messages.length;
-  send({ type: "step", worldRevision: 5, count: 1 });
-  const maturityMessages = messages.slice(beforeMaturity);
-  assert.equal(maturityMessages.some((message) => message.type === "runtimeError"), false);
-  const matureFrame = maturityMessages.at(-1).frame;
-  assert.equal(matureFrame.tick, 20);
-  assert.ok(matureFrame.metrics.claimedCells > 0);
-  assert.ok(matureFrame.metrics.landClaims > 0);
-  assert.ok(matureFrame.metrics.landConflicts > 0);
-  assert.ok(matureFrame.land.events.some((event) => event.type === "claim"));
-  assert.ok(matureFrame.land.cells.some((cell) => cell.state === "claimed"));
-  assert.ok(matureFrame.land.parcels.length > 0);
+  const beforeEvolution = messages.length;
+  send({ type: "step", worldRevision: 5, count: 60 });
+  const evolutionMessages = messages.slice(beforeEvolution);
+  assert.equal(evolutionMessages.some((message) => message.type === "runtimeError"), false);
+  const evolvedFrame = evolutionMessages.at(-1).frame;
+  assert.equal(evolvedFrame.tick, 60);
+  assert.ok(evolvedFrame.metrics.activeMovementCells > 0);
+  assert.ok(evolvedFrame.circulation.cells.some((cell) => cell.use > 0));
+  assert.ok(evolvedFrame.metrics.roadCells + evolvedFrame.metrics.roadReservedCells > 2);
+  assert.ok(evolvedFrame.metrics.landClaims > 0);
+  const evolvedLand = new Map(evolvedFrame.land.cells.map((cell) => [cell.id, cell]));
+  for (const cell of evolvedFrame.circulation.cells.filter((entry) => entry.role !== "open")) {
+    assert.equal(evolvedLand.get(cell.id).ownerId, null, `${cell.id} is both public and claimed`);
+  }
 
   const beforeReset = messages.length;
   send({
@@ -188,10 +194,13 @@ test("territory worlds mature claims, reset cleanly, and replay under worker rev
   assert.ok(resetFrame.land.cells.every((cell) => cell.state === "unclaimed"));
   assert.deepEqual(resetFrame.land.parcels, []);
   assert.deepEqual(resetFrame.land.events, []);
+  assert.deepEqual(resetFrame.circulation, initialFrame.circulation);
   assert.equal(resetFrame.metrics.claimedCells, 0);
   assert.equal(resetFrame.metrics.reservedCells, 0);
   assert.equal(resetFrame.metrics.landClaims, 0);
   assert.equal(resetFrame.metrics.landConflicts, 0);
+  assert.equal(resetFrame.metrics.roadCells, 2);
+  assert.equal(resetFrame.metrics.roadReservedCells, 0);
 
   const beforeStaleControls = messages.length;
   send({ type: "play", worldRevision: 5 });
@@ -199,12 +208,13 @@ test("territory worlds mature claims, reset cleanly, and replay under worker rev
   assert.equal(messages.length, beforeStaleControls);
 
   const beforeReplay = messages.length;
-  send({ type: "step", worldRevision: 6, count: 20 });
+  send({ type: "step", worldRevision: 6, count: 60 });
   const replayMessages = messages.slice(beforeReplay);
   assert.equal(replayMessages.some((message) => message.type === "runtimeError"), false);
   const replayFrame = replayMessages.at(-1).frame;
-  assert.equal(replayFrame.tick, 20);
-  assert.equal(replayFrame.checksum, matureFrame.checksum);
-  assert.deepEqual(replayFrame.land.metrics, matureFrame.land.metrics);
-  assert.deepEqual(replayFrame.land.events, matureFrame.land.events);
+  assert.equal(replayFrame.tick, 60);
+  assert.equal(replayFrame.checksum, evolvedFrame.checksum);
+  assert.deepEqual(replayFrame.land, evolvedFrame.land);
+  assert.deepEqual(replayFrame.circulation, evolvedFrame.circulation);
+  assert.deepEqual(replayFrame.metrics, evolvedFrame.metrics);
 });

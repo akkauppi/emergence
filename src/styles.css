@@ -466,14 +466,18 @@ button:disabled {
 body[data-scenario="desire-paths"] .legend-a { background: #70d6b5; }
 body[data-scenario="desire-paths"] .legend-b { background: #f5b852; }
 
-body[data-scenario="territory-growth"] .legend-self { background: #d9e4ff; }
+body[data-scenario="territory-growth"] .legend-self {
+  border-radius: 1px;
+  background: linear-gradient(90deg, rgba(112, 214, 181, 0.22) 0 45%, #31445a 45% 100%);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.35);
+}
 body[data-scenario="territory-growth"] .legend-a {
   border-radius: 1px;
   background: repeating-linear-gradient(135deg, #e6af47 0 2px, #544526 2px 4px);
 }
 body[data-scenario="territory-growth"] .legend-b {
   border-radius: 1px;
-  background: #7797e8;
+  background: linear-gradient(90deg, #70a4f4, #ef9661, #75cda5, #d38bdd);
 }
 
 .layout-editor {
@@ -755,7 +759,7 @@ body[data-scenario="territory-growth"] .legend-b {
 
 .territory-facts {
   display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
+  grid-template-columns: repeat(8, minmax(0, 1fr));
   gap: 0;
   margin: 10px 0 0;
   padding-top: 9px;
@@ -1896,6 +1900,10 @@ body.presentation-mode {
   .territory-inspector-heading {
     grid-template-columns: 1fr;
     gap: 8px;
+  }
+
+  .territory-inspector-heading select {
+    min-height: 44px;
   }
 
   .territory-facts {

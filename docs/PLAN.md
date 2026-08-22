@@ -8,7 +8,7 @@ The recurring classroom loop is:
 
 > **Predict → run → measure → change one rule → rerun with the same seed → explain.**
 
-The long-term destination is an extensible agent-based urban morphology laboratory. Moving people are the first domain. Persistent traces, land tenure, buildings, parcels, and street networks come later as independent world layers.
+The long-term destination is an extensible agent-based urban morphology laboratory. Moving people are the first domain. Persistent traces, land tenure, and the first movement-grown circulation network are implemented; buildings, occupation, and subdivision remain independent later world layers.
 
 ## 2. Translation of the physical experiment
 
@@ -145,10 +145,11 @@ Measurements: polarization, connected components, trip length, detour ratio, tra
 
 Add an immutable land geometry layer plus independent layers for tenure, occupation, land use, and desirability. Arriving agents can reserve a cell or polygon, bid during conflict, claim after a reservation period, and release or subdivide holdings.
 
-The first territory vertical slice is implemented on an immutable rectangular grid:
+The first territory–circulation vertical slice is implemented on an immutable rectangular grid:
 
 - Every site has stable row-major identity, cardinal topology, and authored access,
-  amenity, terrain, cost, and frontage values.
+  amenity, terrain, and cost values. Road frontage is derived from current adjacency to
+  the movement-grown public network rather than fixed in advance.
 - Every behavior in tick `t` reads the same frozen geometry-and-tenure snapshot and may
   submit at most one reservation or claim intent. Malformed intent structure aborts the
   tick before movement or tenure changes; a well-formed but ineligible action is a
@@ -160,27 +161,47 @@ The first territory vertical slice is implemented on an immutable rectangular gr
 - An owner's first claim may seed a parcel anywhere. Every later claim must share a
   cardinal edge with land that owner had already claimed in the frozen snapshot.
   Reservations and same-tick claims cannot form a temporary bridge.
+- There is no preset block or street grid. Entry cells provide the small public seed
+  from which circulation can grow.
+- The frozen `circulation` observation exposes `route(landId)`. Its preferred-route cardinal
+  search prefers existing roads, then strongly used traces, then unused land. Claimed
+  cells are unavailable; a live plot reservation remains contested space until either
+  tenure or circulation wins it. Stable tie-breaking makes equal routes independent of
+  agent storage order.
+- Movement records use on traversed cells after every agent has decided. Thus every
+  behavior in tick `t` observes the same use field from the end of tick `t − 1`.
+- Only an actively used route cell is eligible for a public-way reservation. A new road
+  cell must share a cardinal edge with an entry or the existing road network.
+- Public-way and plot intents share an atomic arbitration phase. A cell cannot be both
+  circulation-reserved or road and tenure-reserved or claimed; losing intents receive
+  an explicit road/plot conflict result.
+- The frame exposes trace, public-way reservation, and committed-road cells plus any
+  derived nodes and edges. Use, network growth, components, and road/plot conflicts are
+  measured from canonical tick state.
 - Geometry, tenure, and future occupation remain independent. A claim does not yet turn
   a site into a collision obstacle or building.
-- The canvas distinguishes available, reserved, contested, and claimed cells without
-  relying only on hue, outlines parcel perimeters, and exposes a keyboard-accessible
-  tenure inspector. Live measures include claimed share, conflicts, owner count, parcel
-  area and compactness, ownership concentration, reservations, claims, expiries, and
-  rejected actions.
+- The canvas distinguishes travel traces, pending and committed public ways, plot
+  reservations, contested cells, and claims without relying only on hue. The inspector
+  reports circulation and tenure together, while the Tenure toggle can hide ownership
+  without hiding the movement-grown network.
 
 Initial land sequence:
 
 1. Evaluate unclaimed sites by access, amenity, terrain, and neighbour preferences.
-2. Submit a reservation intent rather than mutating land.
-3. Resolve conflicts centrally with an explicit policy and seeded tie-break.
-4. Require contiguous growth and optionally street frontage.
-5. Turn successful claims into obstacles, destinations, or new trip demand.
+2. Follow a preferred route and deposit use on the traversed cells.
+3. Reserve an actively used cell for public circulation or reserve a cell for a plot.
+4. Resolve road and plot conflicts centrally with an explicit policy and seeded tie-break.
+5. Require cardinally connected growth for both the road network and owned parcels.
+6. Turn successful claims into occupation, destinations, or new trip demand.
 
-Steps 1–3 and the contiguous-growth part of step 4 now have a deterministic grid-based foundation. The remaining depth in this
-stage is real affordability and budget locking, hard frontage eligibility, release and
-subdivision, richer parcel geometry, and coupling claims to occupation or demand.
+This sequence now has a deterministic cell-based foundation. It deliberately tests the
+feedback loop between movement and settlement before introducing road widths or
+buildings. Remaining depth includes affordability and budget locking, release and
+subdivision, non-grid route and parcel geometry, capacity and maintenance, and coupling
+claims to occupation or demand. A plot claim still does not create a building.
 
-Measurements: parcel area, frontage, depth, compactness, ownership concentration, conflicts, and landlocked plots.
+Measurements: parcel area, frontage, compactness, ownership concentration, travel use,
+road cells and growth, network components, reservations, and road/plot conflicts.
 
 ### Stage 4 — Urban growth laboratory
 
@@ -245,8 +266,12 @@ Conflicting actions are grouped by target and resolved centrally. A reservation 
 
 ### 0.4 — Streets and settlement
 
-- Persistent graph derived from reinforced paths
-- Building footprints and plot subdivision
+- Preferred-route cell search, movement-use traces, public-way reservation, shared
+  road/plot arbitration, and a persistent cardinal road network (implemented foundation)
+- Derive variable-width street geometry, hierarchy, capacity, and condition from the
+  cell network and its accumulated use
+- Building footprints, occupation, and plot subdivision
+- Agent budgets and the coupling of affordability, claims, and settlement
 - Markets, gates, water, walls, terrain, and multiple livelihood strategies
 - Medieval-like capstone with explicit limitations and comparison worksheets
 
@@ -268,7 +293,18 @@ Headless engine tests should establish that:
 - malformed behavior is isolated and reported;
 - desire-path agents remain finite, bounded, and outside obstacles while completing horizontal, vertical, and diagonal journeys through central, regular-grid, staggered-grid, and weighted multi-gate layouts;
 - every territory behavior in a tick observes the same tenure snapshot, contested cells resolve independently of agent storage order, and an invalid intent leaves the whole tick unchanged;
-- reservations mature and expire at exact documented ticks, no cell is double-owned, every owner's claimed cells remain cardinally connected, and reservation conflicts and expiries replay exactly.
+- reservations mature and expire at exact documented ticks, no cell is double-owned, every owner's claimed cells remain cardinally connected, and reservation conflicts and expiries replay exactly;
+- preferred routes use cardinal adjacency, prefer roads and reinforced traces, reject
+  unavailable tenure cells, and break equal-cost ties deterministically;
+- every behavior sees the same prior-tick use snapshot, and only an actively traversed
+  cell can receive a valid public-way reservation;
+- simultaneous public-way and plot intents for one cell produce one deterministic
+  winner, never dual allocation, and the result is unchanged by agent storage order;
+- every committed public-way cell remains cardinally connected to an entry or earlier
+  road, while routes never use claimed cells;
+- for the same scenario, seed, behavior, parameters, population, and scheduled
+  interventions, agents, tenure, route use, road growth, conflicts, and checksum replay
+  exactly; tick chunking and agent storage order do not change the result.
 
 Browser checks should cover applying a behavior, a visible compactness trend change, worker recovery, resize without reset, mobile tabs, presentation mode, and all labeled controls.
 

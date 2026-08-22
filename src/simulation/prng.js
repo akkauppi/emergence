@@ -65,9 +65,16 @@ function hashCanonicalValue(checksum, value) {
 
   if (ArrayBuffer.isView(value)) {
     checksum = avalanche(checksum ^ hashPart(`typed:${value.constructor.name}:${value.length}`));
-    const words = new Uint32Array(value.buffer, value.byteOffset, Math.floor(value.byteLength / 4));
-    for (const word of words) {
-      checksum = avalanche(checksum ^ word);
+    const bytes = new DataView(value.buffer, value.byteOffset, value.byteLength);
+    let offset = 0;
+    for (; offset + 4 <= value.byteLength; offset += 4) {
+      checksum = avalanche(checksum ^ bytes.getUint32(offset, true));
+    }
+    // Uint8/Uint16 state arrays are not necessarily word-aligned in length.
+    // Hash the tail explicitly so a changed final road/tenure cell cannot be
+    // invisible to replay checksums.
+    for (; offset < value.byteLength; offset += 1) {
+      checksum = avalanche(checksum ^ bytes.getUint8(offset));
     }
     return checksum;
   }
@@ -118,6 +125,10 @@ export function stateChecksum(agents, tick = 0, hiddenState = {}) {
 
   if (hiddenState.land !== undefined) {
     checksum = hashCanonicalValue(checksum, hiddenState.land);
+  }
+
+  if (hiddenState.circulation !== undefined) {
+    checksum = hashCanonicalValue(checksum, hiddenState.circulation);
   }
 
   return checksum.toString(16).padStart(8, "0");

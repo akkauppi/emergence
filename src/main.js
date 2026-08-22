@@ -47,6 +47,7 @@ const ui = {
   territoryArea: element("territory-area-value"),
   territoryCompactness: element("territory-compactness-value"),
   territoryFrontage: element("territory-frontage-value"),
+  territoryCirculation: element("territory-circulation-value"),
   territoryPolicy: element("territory-policy"),
   play: element("play-button"),
   playIcon: element("play-icon"),
@@ -169,6 +170,99 @@ function frameLand(frame = state.frame) {
   return frame?.land || frame?.environment?.land || null;
 }
 
+function frameCirculation(frame = state.frame) {
+  return frame?.circulation || null;
+}
+
+function circulationStatus(feature) {
+  if (!feature) return null;
+  const value = String(feature.status ?? feature.role ?? feature.state ?? feature.designation ?? "").toLowerCase();
+  if (["road", "street", "committed", "public-way", "public_way"].includes(value)) return "road";
+  if (["reserved", "reservation", "pending", "road-reserved", "road_reserved"].includes(value)) return "reserved";
+  if (["trace", "candidate", "used", "preferred"].includes(value)) return "trace";
+  if (value === "open" && circulationUse(feature) > 0) return "trace";
+  return feature.road === true ? "road" : feature.reservedBy !== null && feature.reservedBy !== undefined
+    ? "reserved"
+    : null;
+}
+
+function circulationFeaturesByLandId(frame) {
+  const circulation = frameCirculation(frame);
+  const result = new Map();
+  for (const feature of Array.isArray(circulation?.regions) ? circulation.regions : []) {
+    const id = feature?.landId ?? feature?.cellId ?? feature?.id;
+    if (id !== null && id !== undefined) result.set(String(id), feature);
+  }
+  for (const feature of Array.isArray(circulation?.cells) ? circulation.cells : []) {
+    const id = feature?.landId ?? feature?.cellId ?? feature?.id;
+    if (id !== null && id !== undefined && !result.has(String(id))) result.set(String(id), feature);
+  }
+  return result;
+}
+
+function circulationFeatureForCell(frame, cell, features = null) {
+  if (!cell) return null;
+  if (cell.circulation && typeof cell.circulation === "object") {
+    return { landId: cell.id, ...cell.circulation };
+  }
+  return (features || circulationFeaturesByLandId(frame)).get(String(cell.id)) || null;
+}
+
+function circulationUse(feature) {
+  const value = Number(feature?.use ?? feature?.usage ?? feature?.footfall ?? feature?.load);
+  return Number.isFinite(value) ? Math.max(0, value) : 0;
+}
+
+function circulationLabel(frame, cell, features) {
+  const feature = circulationFeatureForCell(frame, cell, features);
+  const status = circulationStatus(feature);
+  if (!status) {
+    const adjacent = Array.isArray(cell?.roadNeighbors)
+      ? cell.roadNeighbors.length
+      : Number(cell?.roadFrontageEdges ?? cell?.roadFrontage ?? 0);
+    return adjacent > 0 ? `${adjacent} public-way edge${adjacent === 1 ? "" : "s"}` : "no active route";
+  }
+  const use = circulationUse(feature);
+  const label = status === "road"
+    ? "public way"
+    : status === "reserved"
+      ? "public-way reservation"
+      : "travel trace";
+  const holder = status === "reserved" && feature.reservedBy !== null && feature.reservedBy !== undefined
+    ? ` · person ${feature.reservedBy}`
+    : "";
+  const eventConflict = (frameLand(frame)?.events || []).some((event) => (
+    event?.type === "road-land-conflict" && String(event.landId) === String(cell.id)
+  ));
+  const conflict = feature.contested === true || feature.conflict === true || eventConflict
+    ? " · road/plot conflict"
+    : "";
+  return `${label} · use ${Math.round(use)}${holder}${conflict}`;
+}
+
+function roadFrontage(frame, land, cell, parcel, features) {
+  const selectedStatus = circulationStatus(circulationFeatureForCell(frame, cell, features));
+  if (!cell || selectedStatus === "road" || selectedStatus === "reserved") return null;
+  const byId = new Map((land?.cells || []).map((candidate) => [String(candidate.id), candidate]));
+  const cells = (parcel?.cellIds || [cell.id]).map((id) => byId.get(String(id))).filter(Boolean);
+  let edges = 0;
+  let length = 0;
+  for (const parcelCell of cells) {
+    for (const neighborId of Array.isArray(parcelCell.neighborIds) ? parcelCell.neighborIds : []) {
+      const neighbor = byId.get(String(neighborId));
+      const status = circulationStatus(circulationFeatureForCell(frame, neighbor, features));
+      if (status !== "road" && status !== "reserved") continue;
+      edges += 1;
+      const horizontalEdge = Number(parcelCell.column) !== Number(neighbor?.column);
+      const fallback = Number(land?.geometry?.cellSize) || 0;
+      length += horizontalEdge
+        ? Number(parcelCell.height) || fallback
+        : Number(parcelCell.width) || fallback;
+    }
+  }
+  return { edges, length };
+}
+
 function landCellState(cell) {
   if (!cell) return "unclaimed";
   if (cell.state) return cell.state;
@@ -214,11 +308,22 @@ function handleAgentSelection() {
   updateCanvasDescription(true);
 }
 
-function renderTerritoryOptions(land) {
+function renderTerritoryOptions(land, frame, circulationFeatures) {
   const active = (land?.cells || []).filter(
-    (cell) => landCellState(cell) !== "unclaimed" || String(cell.id) === String(state.selectedLandId),
+    (cell) => {
+      const roadStatus = circulationStatus(circulationFeatureForCell(frame, cell, circulationFeatures));
+      return landCellState(cell) !== "unclaimed"
+        || roadStatus === "road"
+        || roadStatus === "reserved"
+        || String(cell.id) === String(state.selectedLandId);
+    },
   );
-  const signature = active.map((cell) => `${cell.id}:${landCellState(cell)}:${landHolder(cell)}`).join("|");
+  const signature = active.map((cell) => {
+    const feature = circulationFeatureForCell(frame, cell, circulationFeatures);
+    return `${cell.id}:${landCellState(cell)}:${landHolder(cell)}:${
+      circulationStatus(feature)
+    }:${feature?.reservedBy ?? ""}`;
+  }).join("|");
   if (signature === state.territoryOptionsSignature) {
     ui.territoryParcelSelect.value = state.selectedLandId || "";
     return;
@@ -227,17 +332,25 @@ function renderTerritoryOptions(land) {
   state.territoryOptionsSignature = signature;
   const prompt = document.createElement("option");
   prompt.value = "";
-  prompt.textContent = active.length === 0 ? "No tenure yet" : "Choose on the map";
+  prompt.textContent = active.length === 0 ? "No claims or roads yet" : "Choose on the map";
   ui.territoryParcelSelect.replaceChildren(prompt);
   for (const cell of active) {
     const option = document.createElement("option");
     option.value = String(cell.id);
-    const holder = landHolder(cell);
-    const stateLabel = landCellState(cell) === "claimed"
-      ? "Claim"
-      : landCellState(cell) === "reserved"
-        ? "Reservation"
-        : "Available cell";
+    const feature = circulationFeatureForCell(frame, cell, circulationFeatures);
+    const roadStatus = circulationStatus(feature);
+    const holder = roadStatus === "reserved" ? feature?.reservedBy ?? null : landHolder(cell);
+    const stateLabel = roadStatus === "road"
+      ? "Public way"
+      : roadStatus === "reserved"
+        ? "Public-way reservation"
+        : landCellState(cell) === "claimed"
+          ? "Claim"
+          : landCellState(cell) === "reserved"
+            ? "Reservation"
+            : roadStatus === "trace"
+              ? "Travel trace"
+              : "Available cell";
     option.textContent = `${stateLabel} ${cell.id}${
       holder === null ? "" : ` · person ${holder}`
     }`;
@@ -249,7 +362,8 @@ function renderTerritoryOptions(land) {
 function renderTerritoryInspector(frame) {
   if (!territoryAvailable()) return;
   const land = frameLand(frame);
-  renderTerritoryOptions(land);
+  const circulationFeatures = circulationFeaturesByLandId(frame);
+  renderTerritoryOptions(land, frame, circulationFeatures);
   const cell = selectedLandCell(frame);
   const parcel = parcelForCell(land, cell);
   if (!cell) {
@@ -260,6 +374,7 @@ function renderTerritoryInspector(frame) {
     ui.territoryArea.textContent = "—";
     ui.territoryCompactness.textContent = "—";
     ui.territoryFrontage.textContent = "—";
+    ui.territoryCirculation.textContent = "—";
   } else {
     const tenure = landCellState(cell);
     const holder = landHolder(cell);
@@ -275,19 +390,21 @@ function renderTerritoryInspector(frame) {
     ui.territoryCompactness.textContent = Number.isFinite(parcel?.compactness)
       ? `${Math.round(parcel.compactness * 100)}%`
       : "—";
-    ui.territoryFrontage.textContent = Number.isFinite(parcel?.frontage)
-      ? `${Math.round(parcel.frontage)} u`
-      : Number.isFinite(cell.frontage)
-        ? `${Math.round(cell.frontage)} u`
-        : "—";
+    const frontage = roadFrontage(frame, land, cell, parcel, circulationFeatures);
+    ui.territoryFrontage.textContent = frontage === null
+      ? "public-way cell"
+      : frontage.edges > 0
+        ? `${Math.round(frontage.length)} u · ${frontage.edges} edge${frontage.edges === 1 ? "" : "s"}`
+        : "none";
+    ui.territoryCirculation.textContent = circulationLabel(frame, cell, circulationFeatures);
   }
 
   const policy = land?.policy || {};
   const maturity = Number(policy.reservationTicks ?? policy.holdTicks);
   const expiry = Number(policy.expiryTicks ?? policy.reservationExpiryTicks);
-  ui.territoryPolicy.textContent = `One active reservation per person · highest priority wins · seeded tie-breaks${
+  ui.territoryPolicy.textContent = `One active plot reservation per person · highest priority wins · seeded tie-breaks${
     Number.isFinite(maturity) ? ` · matures after ${maturity} ticks` : ""
-  }${Number.isFinite(expiry) ? ` · expires after ${expiry} ticks` : ""}.`;
+  }${Number.isFinite(expiry) ? ` · expires after ${expiry} ticks` : ""} · active route cells may be reserved as public way · road and plot intents resolve together.`;
 }
 
 function boundedInteger(input, minimum, maximum, fallback) {
@@ -830,13 +947,16 @@ function updateCanvasDescription(force = false) {
   if (!force || !state.frame) return;
   const selected = state.frame.agents.find((agent) => agent.id === renderer.selectedId);
   const selectedCell = selectedLandCell(state.frame);
+  const selectedCirculation = selectedCell
+    ? circulationLabel(state.frame, selectedCell, circulationFeaturesByLandId(state.frame))
+    : null;
   const selectedDestination = state.frame.environment?.destinations?.find(
     (destination) => destination.id === selected?.destinationId,
   );
   const selection = territoryAvailable() && selectedCell
     ? ` Selected land cell ${selectedCell.id} is ${landCellState(selectedCell)}${
       landHolder(selectedCell) === null ? "" : ` by person ${landHolder(selectedCell)}`
-    }.`
+    }; circulation: ${selectedCirculation}.`
     : selected
       ? state.scenario.environment?.journeys?.enabled
       ? ` Selected person ${selected.id} is travelling toward ${
@@ -849,12 +969,24 @@ function updateCanvasDescription(force = false) {
   const configuredDelay = state.frame.configuredDelayTicks ?? state.frame.delayTicks ?? 0;
   const observationAge = state.frame.observationAge ?? state.frame.delayTicks ?? 0;
   const warmup = configuredDelay > observationAge ? `, currently ${observationAge} ticks of history` : "";
+  const roadCells = state.frame.metrics.roadCells ?? state.frame.metrics.publicWayCells ?? 0;
+  const roadReservedCells = state.frame.metrics.roadReservedCells
+    ?? state.frame.metrics.roadReservations
+    ?? 0;
+  const activeMovementCells = state.frame.metrics.activeMovementCells ?? 0;
+  const roadLandConflicts = state.frame.metrics.roadLandConflicts
+    ?? state.frame.metrics.circulationConflicts
+    ?? 0;
   const scenarioMeasurement = territoryAvailable()
-    ? ` ${formatMetric(state.frame.metrics.claimedShare, { format: "fraction-percent" })} of buildable land claimed; ${
+    ? ` ${formatMetric(state.frame.metrics.claimedShare, { format: "fraction-percent" })} of land cells claimed; ${
       state.frame.metrics.reservedCells ?? 0
     } active reservations; ${state.frame.metrics.landConflicts ?? 0} resolved conflicts; ${
       state.frame.metrics.landOwners ?? 0
-    } landholders.`
+    } landholders; ${roadCells} public-way cells${roadReservedCells > 0 ? `, ${roadReservedCells} pending` : ""}; ${
+      activeMovementCells
+    } actively used route cells; ${
+      roadLandConflicts
+    } road/plot conflicts.`
     : state.scenario.environment?.field?.enabled
     ? ` Trail concentration ${formatMetric(state.frame.metrics.trailConcentration, state.scenario.metric)}; ${
       state.frame.metrics.trips ?? 0
@@ -881,7 +1013,7 @@ function updateCanvasInstruction(mode = "default") {
   } else if (state.perturbed) {
     ui.canvasInstruction.textContent = "Manual perturbation applied · reset to reproduce the seeded run.";
   } else if (territoryAvailable()) {
-    ui.canvasInstruction.textContent = "Click a person or land cell to inspect · reservations hatch, claims join into parcels.";
+    ui.canvasInstruction.textContent = "Click a person or cell to inspect · preferred routes leave traces that can become public ways.";
   } else {
     ui.canvasInstruction.textContent = "Click a person to inspect · drag a person to perturb the group.";
   }
@@ -1036,13 +1168,13 @@ function loadScenario(scenario, { preserveSeed = true } = {}) {
   const hasJourneys = Boolean(scenario.environment?.journeys?.enabled);
   const hasSocialRelations = scenario.relationMode !== "none";
   const hasLand = territoryAvailable(scenario);
-  ui.legendSelfLabel.textContent = hasLand ? "people" : "selected";
+  ui.legendSelfLabel.textContent = hasLand ? "trace → public way" : "selected";
   ui.legendAItem.hidden = !hasLand && !hasJourneys && !hasSocialRelations;
   ui.legendBItem.hidden = !hasLand && !hasJourneys && !hasSocialRelations;
   ui.legendCItem.hidden = !hasLand;
   ui.legendALabel.textContent = hasLand ? "reserved" : hasJourneys ? "destination" : "person A";
   ui.legendBLabel.textContent = hasLand ? "claimed" : hasJourneys ? "footfall" : "person B";
-  ui.legendCLabel.textContent = "conflict";
+  ui.legendCLabel.textContent = hasLand ? "road / plot conflict" : "conflict";
   ui.territoryInspector.hidden = !hasLand;
   ui.trailsControl.hidden = hasLand;
   ui.relationsControl.hidden = hasLand;
@@ -1051,7 +1183,8 @@ function loadScenario(scenario, { preserveSeed = true } = {}) {
   ui.editor.value = scenario.source;
   renderer.setScenario(scenario.relationMode, state.params);
   renderer.setSelectedLand?.(null);
-  renderer.setLandVisible?.(ui.land.checked);
+  if (renderer.setTenureVisible) renderer.setTenureVisible(ui.land.checked);
+  else renderer.setLandVisible?.(ui.land.checked);
   setLayoutTool("inspect");
   renderer.setSelected(0);
   updateLineNumbers();
@@ -1175,7 +1308,10 @@ ui.population.addEventListener("change", () => {
 });
 ui.trails.addEventListener("change", () => renderer.setTrails(ui.trails.checked));
 ui.relations.addEventListener("change", () => renderer.setRelations(ui.relations.checked));
-ui.land.addEventListener("change", () => renderer.setLandVisible?.(ui.land.checked));
+ui.land.addEventListener("change", () => {
+  if (renderer.setTenureVisible) renderer.setTenureVisible(ui.land.checked);
+  else renderer.setLandVisible?.(ui.land.checked);
+});
 ui.territoryParcelSelect.addEventListener("change", () => {
   handleLandSelection(ui.territoryParcelSelect.value || null);
 });

@@ -11,9 +11,9 @@ function cell(id, x, y, attributes = {}, tenure = {}) {
     id,
     x,
     y,
-    width: 36,
-    height: 36,
-    center: { x: x + 18, y: y + 18 },
+    width: 40,
+    height: 40,
+    center: { x: x + 20, y: y + 20 },
     access: 0,
     amenity: 0,
     terrain: 0,
@@ -25,138 +25,235 @@ function cell(id, x, y, attributes = {}, tenure = {}) {
   };
 }
 
-function runBehavior({ cells, mine = [], reservation = null, neighborIds = {}, tick = 0 }) {
+function vectorApi(seekTargets) {
+  return {
+    subtract: (a, b) => ({ x: a.x - b.x, y: a.y - b.y }),
+    unit: (value) => {
+      const length = Math.hypot(value.x, value.y);
+      return length > 0 ? { x: value.x / length, y: value.y / length } : { x: 0, y: 0 };
+    },
+    dot: (a, b) => a.x * b.x + a.y * b.y,
+    distance: (a, b) => Math.hypot(a.x - b.x, a.y - b.y),
+    midpoint: (a, b) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }),
+    seek: (_self, target, strength) => {
+      seekTargets.push({ ...target });
+      return { x: target.x * strength, y: target.y * strength };
+    },
+  };
+}
+
+function runBehavior({
+  cells,
+  self = {},
+  destination = { id: "east", x: 950, y: 325 },
+  obstacles = [],
+  fieldSample = () => 0,
+  mine = [],
+  reservation = null,
+  neighborIds = {},
+  circulationCells = {},
+  routes = {},
+  publicIds = [],
+} = {}) {
   const behavior = compileBehavior(scenario.source);
-  const byId = new Map(cells.map((entry) => [entry.id, entry]));
-  return behavior({
+  const byId = new Map((cells || []).map((entry) => [entry.id, entry]));
+  const seekTargets = [];
+  const routeCalls = [];
+  const publicSet = new Set(publicIds);
+  const decision = behavior({
     self: {
       id: 7,
-      position: { x: 50, y: 50 },
+      position: { x: 80, y: 325 },
       velocity: { x: 0, y: 0 },
       radius: 7,
+      ...self,
     },
+    destination,
+    obstacles,
+    field: { sample: fieldSample },
     params: { ...scenario.params },
-    vec: {
-      seek: (_self, target, strength) => ({ x: target.x * strength, y: target.y * strength }),
-    },
+    vec: vectorApi(seekTargets),
     world: { width: 1_000, height: 650 },
-    tick,
-    land: {
+    land: cells === undefined ? null : {
       enabled: true,
       cells,
       mine,
       reservation,
       cell: (id) => byId.get(String(id)) || null,
-      neighbors: (id) => (neighborIds[String(id)] || []).map((neighborId) => byId.get(neighborId)),
+      neighbors: (id) => (neighborIds[String(id)] || [])
+        .map((neighborId) => byId.get(neighborId))
+        .filter(Boolean),
+    },
+    circulation: {
+      enabled: true,
+      cell: (id) => circulationCells[String(id)] || { role: "open", use: 0 },
+      usage: (id) => circulationCells[String(id)]?.use ?? 0,
+      isPublic: (id) => publicSet.has(String(id)),
+      fronted: (id) => circulationCells[String(id)]?.fronted !== false,
+      route: (id) => {
+        const landId = String(id);
+        routeCalls.push(landId);
+        return routes[landId] || { reachable: false, fronted: false, arrived: false };
+      },
     },
   });
+  return { decision, routeCalls, seekTargets };
 }
 
-test("territory scenario follows Stage 03's authored grid and metric contract", () => {
+test("territory scenario couples an ordinary land grid to journeys, traces, and emergent roads", () => {
   const desirePathIndex = scenarios.findIndex(({ id }) => id === "desire-paths");
   assert.equal(scenarios[desirePathIndex + 1], scenario);
   assert.deepEqual(scenario.stage, { number: "03", label: "Territory laboratory / 03" });
   assert.deepEqual(
     scenario.summaryMetrics.map(({ key }) => key),
-    ["claimedShare", "landConflicts"],
+    ["claimedShare", "roadShare"],
   );
   assert.equal(scenario.metric.key, "meanParcelCompactness");
   assert.equal(scenario.trend.key, "claimedShare");
   assert.equal(typeof compileBehavior(scenario.source), "function");
 
-  const land = scenario.environment.land;
-  assert.equal(land.enabled, true);
-  assert.ok(land.columns * land.rows >= 72);
-  assert.ok(
-    land.origin.x + land.columns * land.cellSize + (land.columns - 1) * land.gap <= 1_000,
+  const { land, destinations, journeys, field, circulation } = scenario.environment;
+  assert.deepEqual(
+    {
+      origin: land.origin,
+      columns: land.columns,
+      rows: land.rows,
+      cellSize: land.cellSize,
+      gap: land.gap,
+    },
+    { origin: { x: 20, y: 10 }, columns: 24, rows: 15, cellSize: 40, gap: 0 },
   );
-  assert.ok(
-    land.origin.y + land.rows * land.cellSize + (land.rows - 1) * land.gap <= 650,
-  );
-  assert.deepEqual(land.attributes.frontage.edges, ["west", "east"]);
-  assert.deepEqual(land.policy, {
-    reservationTicks: 18,
-    expiryTicks: 90,
-    requireContiguous: true,
-    maxReservationsPerOwner: 1,
+  assert.equal(land.rightOfWay, undefined, "the preset must not author a street grid");
+  assert.ok(land.origin.x + land.columns * land.cellSize <= 1_000);
+  assert.ok(land.origin.y + land.rows * land.cellSize <= 650);
+  assert.deepEqual(land.attributes.frontage.edges, ["north", "east", "south", "west"]);
+  assert.equal(destinations.length, 4);
+  assert.deepEqual(journeys, { enabled: true, spawnAtDestinations: true, arrivalRadius: 25 });
+  assert.deepEqual(field, {
+    enabled: true,
+    cellSize: 10,
+    deposit: 1,
+    decay: 0.006,
+    diffusion: 0.04,
+  });
+  assert.deepEqual(circulation, {
+    enabled: true,
+    sourceLayer: "land",
+    entrySides: ["west", "east"],
+    usePersistence: 0.94,
+    reserveThreshold: 2.5,
+    releaseThreshold: 1.25,
+    maturityTicks: 12,
+    releaseTicks: 24,
+    maxNewPerTick: 2,
+    roadPreference: 0.45,
+    trailPreference: 0.5,
+    arrivalRadius: 12,
   });
 });
 
-test("territory rule reserves the best deterministic eligible site", () => {
-  const accessible = cell("land-0-0", 40, 40, {
-    access: 1,
-    amenity: 1,
-    terrain: 0,
-    cost: 0.1,
-  });
-  const remote = cell("land-0-1", 850, 550, {
-    access: 0,
-    amenity: 0,
-    terrain: 1,
-    cost: 2,
-  });
-
-  const decision = runBehavior({ cells: [remote, accessible] });
-  assert.equal(decision.reserveLand.landId, accessible.id);
-  assert.ok(Number.isFinite(decision.reserveLand.bid));
-  assert.ok(decision.reserveLand.bid > 0);
-  assert.equal(decision.claimLand, undefined);
-  assert.ok([decision.acceleration.x, decision.acceleration.y].every(Number.isFinite));
-});
-
-test("territory rule grows only through cardinal parcel neighbours", () => {
-  const owned = cell("land-1-1", 100, 100, {}, { ownerId: 7 });
-  const adjacent = cell("land-1-2", 138, 100, {
-    access: 0.1,
-    amenity: 0,
-    cost: 1,
-  });
-  const disconnected = cell("land-8-8", 800, 500, {
-    access: 1,
-    amenity: 1,
-    cost: 0,
-  });
-  const decision = runBehavior({
-    cells: [owned, disconnected, adjacent],
-    mine: [owned.id],
-    neighborIds: {
-      [owned.id]: [adjacent.id],
-      [adjacent.id]: [owned.id],
+test("walking follows the Stage 02 preferred-route heuristic while land bidding stays local", () => {
+  const quiet = cell("land-7-2", 100, 300, { access: 0.4, amenity: 0.3 });
+  const busy = cell("land-7-1", 60, 300, { access: 0.4, amenity: 0.3 });
+  const blocker = { id: "claimed-centre", x: 430, y: 230, width: 140, height: 190 };
+  const { decision, seekTargets } = runBehavior({
+    cells: [busy, quiet],
+    obstacles: [blocker],
+    fieldSample: (point) => point.y < blocker.y ? 1 : 0,
+    circulationCells: {
+      [busy.id]: { role: "open", use: 1 },
+      [quiet.id]: { role: "open", use: 0 },
     },
   });
 
-  assert.deepEqual(decision.reserveLand.landId, adjacent.id);
+  assert.equal(decision.reserveLand.landId, quiet.id, "existing through-movement lowers a private bid");
+  assert.ok(Number.isFinite(decision.reserveLand.bid));
+  assert.equal(seekTargets.length, 1);
+  assert.ok(seekTargets[0].y < blocker.y, "the reinforced upper detour should be preferred");
+  assert.notDeepEqual(seekTargets[0], quiet.center, "settlement never replaces the trip target");
 });
 
-test("territory rule waits for its reservation then emits exactly one claim intent", () => {
-  const reserved = cell("land-2-3", 200, 160, {}, { reservedBy: 7 });
+test("an actively used open cell remains reservable, but a public cell does not", () => {
+  const active = cell("land-7-1", 60, 300, { access: 1, amenity: 1 });
+  const contested = runBehavior({
+    cells: [active],
+    circulationCells: { [active.id]: { role: "open", use: 1 } },
+  });
+  assert.equal(contested.decision.reserveLand.landId, active.id);
+
+  const protectedRoad = runBehavior({
+    cells: [active],
+    circulationCells: { [active.id]: { role: "road", use: 1 } },
+  });
+  assert.equal(protectedRoad.decision.reserveLand, undefined);
+
+  const protectedByFacade = runBehavior({ cells: [active], publicIds: [active.id] });
+  assert.equal(protectedByFacade.decision.reserveLand, undefined);
+});
+
+test("connected parcel growth considers only nearby cardinal neighbours", () => {
+  const owned = cell("land-7-1", 60, 300, {}, { ownerId: 7 });
+  const adjacent = cell("land-7-2", 100, 300, { access: 0.2 });
+  const disconnected = cell("land-6-1", 60, 260, { access: 1, amenity: 1 });
+  const { decision } = runBehavior({
+    cells: [owned, adjacent, disconnected],
+    mine: [owned.id],
+    neighborIds: { [owned.id]: [adjacent.id], [adjacent.id]: [owned.id] },
+  });
+  assert.equal(decision.reserveLand.landId, adjacent.id);
+});
+
+test("a reservation approaches public frontage and claims only when mature and arrived", () => {
+  const reserved = cell("land-7-4", 180, 300, {}, { reservedBy: 7 });
+  const frontageWaypoint = { x: 174, y: 320 };
   const waiting = runBehavior({
     cells: [reserved],
-    reservation: { landId: reserved.id, claimable: false, claimableAt: 12 },
-    tick: 11,
+    reservation: { landId: reserved.id, claimable: false },
+    routes: {
+      [reserved.id]: {
+        reachable: true,
+        fronted: true,
+        arrived: false,
+        waypoint: frontageWaypoint,
+      },
+    },
   });
-  assert.equal(waiting.reserveLand, undefined);
-  assert.equal(waiting.claimLand, undefined);
+  assert.equal(waiting.decision.claimLand, undefined);
+  assert.deepEqual(waiting.seekTargets.at(-1), frontageWaypoint);
+  assert.notDeepEqual(waiting.seekTargets.at(-1), reserved.center);
+
+  for (const route of [
+    { reachable: true, fronted: false, arrived: true, waypoint: frontageWaypoint },
+    { reachable: true, fronted: true, arrived: false, waypoint: frontageWaypoint },
+  ]) {
+    const premature = runBehavior({
+      cells: [reserved],
+      reservation: { landId: reserved.id, claimable: true },
+      routes: { [reserved.id]: route },
+    });
+    assert.equal(premature.decision.claimLand, undefined);
+  }
 
   const claiming = runBehavior({
     cells: [reserved],
-    reservation: { landId: reserved.id, claimable: true, claimableAt: 12 },
-    tick: 12,
+    reservation: { landId: reserved.id, claimable: true },
+    routes: {
+      [reserved.id]: {
+        reachable: true,
+        fronted: true,
+        arrived: true,
+        waypoint: frontageWaypoint,
+      },
+    },
   });
-  assert.equal(claiming.reserveLand, undefined);
-  assert.deepEqual(claiming.claimLand, { landId: reserved.id });
-  assert.ok([claiming.acceleration.x, claiming.acceleration.y].every(Number.isFinite));
+  assert.deepEqual(claiming.decision.claimLand, { landId: reserved.id });
+  assert.equal(claiming.decision.reserveLand, undefined);
 });
 
-test("territory rule remains a valid movement rule when land is unavailable", () => {
-  const behavior = compileBehavior(scenario.source);
-  const decision = behavior({
-    self: { id: 0, position: { x: 0, y: 0 }, velocity: { x: 0, y: 0 } },
-    params: scenario.params,
-    vec: {},
-    world: { width: 1_000, height: 650 },
-    tick: 0,
-    land: null,
-  });
-  assert.deepEqual(decision, { acceleration: { x: 0, y: 0 } });
+test("the rule keeps walking when territory observations are unavailable", () => {
+  const { decision, seekTargets } = runBehavior({ cells: undefined });
+  assert.equal(decision.reserveLand, undefined);
+  assert.equal(decision.claimLand, undefined);
+  assert.deepEqual(seekTargets, [{ x: 950, y: 325 }]);
+  assert.ok([decision.acceleration.x, decision.acceleration.y].every(Number.isFinite));
 });

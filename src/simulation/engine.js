@@ -2,6 +2,7 @@ import { keyedRandom, randomInteger, stateChecksum } from "./prng.js";
 import { clampWorldPoint, equilateralApex, nearestEquilateralApex } from "./geometry.js";
 import { ScalarField } from "./scalar-field.js";
 import { LandGridState, normalizeLandConfig, parseLandIntent } from "./land-grid.js";
+import { PublicCirculation, normalizeCirculationConfig } from "./public-circulation.js";
 
 const DEFAULT_WIDTH = 1_000;
 const DEFAULT_HEIGHT = 650;
@@ -85,7 +86,7 @@ function normalizeEnvironment(environment, worldWidth, worldHeight) {
       cellSize: clamp(finiteOr(Number(fieldInput.cellSize), 16), 2, Math.max(worldWidth, worldHeight)),
       deposit: clamp(finiteOr(Number(fieldInput.deposit), 1), 0, 1_000),
       decay: clamp(finiteOr(Number(fieldInput.decay), 0), 0, 1),
-      persistence: fieldInput.persistence === undefined
+      persistence: fieldInput.persistence === undefined || fieldInput.persistence === null
         ? null
         : clamp(finiteOr(Number(fieldInput.persistence), 1), 0, 1),
       diffusion: clamp(finiteOr(Number(fieldInput.diffusion), 0), 0, 1),
@@ -93,8 +94,9 @@ function normalizeEnvironment(environment, worldWidth, worldHeight) {
     : null;
 
   const land = normalizeLandConfig(environment.land, worldWidth, worldHeight);
+  const circulation = normalizeCirculationConfig(environment.circulation);
 
-  return Object.freeze({ destinations, obstacles, journeys, field, land });
+  return Object.freeze({ destinations, obstacles, journeys, field, land, circulation });
 }
 
 function resolveCircleAgainstRectangle(position, velocity, radius, rectangle) {
@@ -221,6 +223,14 @@ export class SimulationEngine {
     this.land = this.environment?.land
       ? new LandGridState(this.environment.land, { seed: this.seed, worldWidth: this.width, worldHeight: this.height })
       : null;
+    this.circulation = this.environment?.circulation && this.land
+      ? new PublicCirculation(this.environment.circulation, {
+        land: this.land,
+        seed: this.seed,
+        worldWidth: this.width,
+        worldHeight: this.height,
+      })
+      : null;
     this.trips = 0;
     this.tick = 0;
     this.lastError = null;
@@ -244,6 +254,14 @@ export class SimulationEngine {
     this.field = this.environment?.field ? new ScalarField(this.width, this.height, this.environment.field) : null;
     this.land = this.environment?.land
       ? new LandGridState(this.environment.land, { seed: this.seed, worldWidth: this.width, worldHeight: this.height })
+      : null;
+    this.circulation = this.environment?.circulation && this.land
+      ? new PublicCirculation(this.environment.circulation, {
+        land: this.land,
+        seed: this.seed,
+        worldWidth: this.width,
+        worldHeight: this.height,
+      })
       : null;
     this.trips = 0;
     this.tick = 0;
@@ -330,6 +348,23 @@ export class SimulationEngine {
         return;
       }
     }
+  }
+
+  #movementObstacles() {
+    const authored = this.environment?.obstacles || [];
+    if (!this.land) return authored;
+    const privateCells = this.land.config.cells
+      .filter((cell) => this.land.ownerByCell[cell.index] !== -1)
+      .map((cell) => Object.freeze({
+        id: `private:${cell.id}`,
+        label: "Claimed private land",
+        x: cell.x,
+        y: cell.y,
+        width: cell.width,
+        height: cell.height,
+        landId: cell.id,
+      }));
+    return Object.freeze([...authored, ...privateCells]);
   }
 
   #recordObservation({ replace = false } = {}) {
@@ -532,7 +567,10 @@ export class SimulationEngine {
     });
     const readonlyParams = Object.freeze({ ...this.params });
     const destinations = this.environment?.destinations || Object.freeze([]);
-    const obstacles = this.environment?.obstacles || Object.freeze([]);
+    // Claimed cells close to through-movement on the following tick. Private
+    // reservations stay traversable, preserving the road-versus-plot conflict
+    // until either use actually wins public status or tenure becomes a claim.
+    const obstacles = this.#movementObstacles();
     const fieldApi = this.field?.api || Object.freeze({
       enabled: false,
       cols: 0,
@@ -578,6 +616,7 @@ export class SimulationEngine {
         obstacles,
         field: fieldApi,
         land: this.land?.viewFor(agent.id, this.tick) || null,
+        circulation: this.circulation?.viewFor(views[index], this.tick) || null,
         tick: this.tick,
         sense: observation,
         random: (key = "default") => keyedRandom(this.seed, this.tick, agent.id, key),
@@ -635,15 +674,6 @@ export class SimulationEngine {
       );
     }
 
-    const landTransition = this.land?.stage(landIntents, this.tick) || null;
-    if (landTransition && !landTransition.ok) {
-      this.lastError = {
-        tick: this.tick,
-        message: landTransition.error || "Land intents could not be resolved.",
-      };
-      return { ok: false, error: this.lastError };
-    }
-
     const damping = Math.exp(-0.18 * this.dt);
     const nextAgents = this.agents.map((agent, index) => {
       const acceleration = intents[index];
@@ -697,12 +727,45 @@ export class SimulationEngine {
       };
     });
 
+    const circulationTransition = this.circulation?.stage(
+      this.agents.map((agent, index) => Object.freeze({
+        agentId: agent.id,
+        from: frozenVector(agent.x, agent.y),
+        to: frozenVector(nextAgents[index].x, nextAgents[index].y),
+      })),
+      this.tick,
+    ) || null;
+    if (circulationTransition && !circulationTransition.ok) {
+      this.lastError = {
+        tick: this.tick,
+        message: circulationTransition.error || "Circulation use could not be resolved.",
+      };
+      return { ok: false, error: this.lastError };
+    }
+
+    const landTransition = this.land?.stage(landIntents, this.tick, {
+      publicCells: this.circulation?.publicLandIds?.() || [],
+      publicCandidates: circulationTransition?.publicCandidates || [],
+    }) || null;
+    if (landTransition && !landTransition.ok) {
+      this.lastError = {
+        tick: this.tick,
+        message: landTransition.error || "Land intents could not be resolved.",
+      };
+      return { ok: false, error: this.lastError };
+    }
+
     this.agents = this.#switchArrivedJourneys(nextAgents);
     if (this.field) {
       this.field.evolve(this.agents, {
         deposit: this.environment.field.deposit,
         persistence: this.#fieldPersistence(),
         diffusion: this.environment.field.diffusion,
+      });
+    }
+    if (circulationTransition) {
+      this.circulation.commit(circulationTransition, {
+        acceptedLandIds: landTransition?.acceptedPublicLandIds || [],
       });
     }
     if (landTransition) this.land.commit(landTransition);
@@ -725,7 +788,7 @@ export class SimulationEngine {
     const agent = this.agents[index];
     let target = clampWorldPoint({ x, y }, agent.radius, this.width, this.height);
     let targetVelocity = { x: agent.vx, y: agent.vy };
-    for (const obstacle of this.environment?.obstacles || []) {
+    for (const obstacle of this.#movementObstacles()) {
       const collision = resolveCircleAgainstRectangle(target, targetVelocity, agent.radius, obstacle);
       target = collision.position;
       targetVelocity = collision.velocity;
@@ -753,6 +816,16 @@ export class SimulationEngine {
 
   metrics() {
     const count = this.agents.length;
+    const circulationMetrics = this.circulation?.metrics() || {
+      roadCells: 0,
+      roadReservedCells: 0,
+      activeRouteCells: 0,
+      roadShare: 0,
+      roadLandConflicts: 0,
+      roadPreemptions: 0,
+      networkComponents: 0,
+      meanRoadUse: 0,
+    };
     const landMetrics = this.land?.metrics() || {
       claimedCells: 0,
       reservedCells: 0,
@@ -763,6 +836,8 @@ export class SimulationEngine {
       meanParcelArea: 0,
       meanParcelCompactness: 0,
       ownershipConcentration: 0,
+      roadLandConflicts: 0,
+      roadPreemptions: 0,
     };
     if (count === 0) {
       return {
@@ -773,6 +848,7 @@ export class SimulationEngine {
         trailConcentration: 0,
         totalFootfall: 0,
         trips: this.trips,
+        ...circulationMetrics,
         ...landMetrics,
       };
     }
@@ -805,6 +881,7 @@ export class SimulationEngine {
       trailConcentration: fieldMetrics.concentration,
       totalFootfall: fieldMetrics.total,
       trips: this.trips,
+      ...circulationMetrics,
       ...landMetrics,
     };
   }
@@ -877,6 +954,56 @@ export class SimulationEngine {
     const observationAge = this.tick - delayedObservation.tick;
     const fieldFrame = this.field?.frame() || null;
     const landFrame = this.land?.frame(this.tick) || null;
+    const circulationFrame = this.circulation?.frame() || null;
+    const landCellById = this.land
+      ? new Map(this.land.config.cells.map((cell) => [cell.id, cell]))
+      : null;
+    const frameAgents = this.agents.map((agent) => {
+      let circulationRoute = null;
+      if (this.circulation && this.land) {
+        const reservationIndex = this.land.reservedByCell.indexOf(agent.id);
+        if (reservationIndex >= 0) {
+          const landId = this.land.config.cells[reservationIndex].id;
+          const self = Object.freeze({
+            id: agent.id,
+            position: frozenVector(agent.x, agent.y),
+            velocity: frozenVector(agent.vx, agent.vy),
+            radius: agent.radius,
+          });
+          const route = this.circulation.viewFor(self, this.tick).route(landId);
+          if (route.reachable) {
+            const points = [
+              { x: agent.x, y: agent.y },
+              ...route.cellIds.map((id) => landCellById.get(id)?.center).filter(Boolean),
+            ].filter((point, index, values) => (
+              index === 0
+              || Math.hypot(point.x - values[index - 1].x, point.y - values[index - 1].y) > EPSILON
+            ));
+            if (points.length >= 2) {
+              circulationRoute = {
+                landId,
+                status: route.arrived ? "arrived" : route.fronted ? "fronted" : "forming",
+                cellIds: [...route.cellIds],
+                points,
+              };
+            }
+          }
+        }
+      }
+      return {
+        id: agent.id,
+        x: agent.x,
+        y: agent.y,
+        vx: agent.vx,
+        vy: agent.vy,
+        angle: agent.angle,
+        radius: agent.radius,
+        chosen: [...agent.chosen],
+        destinationId: agent.destinationId,
+        arrivalCount: agent.arrivalCount,
+        ...(circulationRoute ? { circulationRoute } : {}),
+      };
+    });
     const environmentFrame = this.environment ? {
       destinations: this.environment.destinations,
       obstacles: this.environment.obstacles,
@@ -910,6 +1037,7 @@ export class SimulationEngine {
         } : undefined,
         field: this.field?.values,
         land: this.land?.checksumState(),
+        circulation: this.circulation?.checksumState(),
       }),
       eventCursor: this.eventCursor,
       lastIntervention: this.interventions.at(-1) || null,
@@ -926,18 +1054,8 @@ export class SimulationEngine {
       environment: environmentFrame,
       field: fieldFrame,
       land: landFrame,
-      agents: this.agents.map((agent) => ({
-        id: agent.id,
-        x: agent.x,
-        y: agent.y,
-        vx: agent.vx,
-        vy: agent.vy,
-        angle: agent.angle,
-        radius: agent.radius,
-        chosen: [...agent.chosen],
-        destinationId: agent.destinationId,
-        arrivalCount: agent.arrivalCount,
-      })),
+      circulation: circulationFrame,
+      agents: frameAgents,
     };
   }
 }

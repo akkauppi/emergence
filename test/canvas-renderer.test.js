@@ -334,9 +334,14 @@ test("inspect mode selects land cells while giving overlapping agents precedence
     assert.equal(harness.renderer.selectedLandId, null);
 
     harness.renderer.setLandVisible(false);
+    assert.equal(harness.renderer.tenureVisible, false);
     harness.dispatch("pointerdown", { pointerId: 3, clientX: 238, clientY: 108 });
-    assert.deepEqual(selectedLand, [{ id: "c", state: "claimed" }]);
-    harness.renderer.setLandVisible(true);
+    assert.deepEqual(selectedLand, [
+      { id: "c", state: "claimed" },
+      { id: "d", state: "unclaimed" },
+    ]);
+    harness.renderer.setTenureVisible(true);
+    assert.equal(harness.renderer.tenureVisible, true);
   } finally {
     harness.restore();
   }

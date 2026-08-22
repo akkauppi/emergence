@@ -373,12 +373,219 @@ function idOf(value) {
   return value === undefined || value === null ? "" : String(value);
 }
 
-function behave({ self, params, vec, world, tick, land }) {
-  // Territory is optional so the program remains safe while switching
-  // scenarios or while the worker is rebuilding the world.
-  if (!land?.enabled || !Array.isArray(land.cells)) {
-    return { acceleration: { x: 0, y: 0 } };
+function segmentCrossesBlock(from, to, block, padding) {
+  const bounds = {
+    left: finite(block.x) - padding,
+    right: finite(block.x) + finite(block.width) + padding,
+    top: finite(block.y) - padding,
+    bottom: finite(block.y) + finite(block.height) + padding
+  };
+  const delta = { x: to.x - from.x, y: to.y - from.y };
+  let entry = 0;
+  let exit = 1;
+  for (const axis of ["x", "y"]) {
+    const low = axis === "x" ? bounds.left : bounds.top;
+    const high = axis === "x" ? bounds.right : bounds.bottom;
+    if (Math.abs(delta[axis]) < 0.000001) {
+      if (from[axis] < low || from[axis] > high) return false;
+      continue;
+    }
+    const first = (low - from[axis]) / delta[axis];
+    const second = (high - from[axis]) / delta[axis];
+    entry = Math.max(entry, Math.min(first, second));
+    exit = Math.min(exit, Math.max(first, second));
+    if (entry > exit) return false;
   }
+  return exit >= 0 && entry <= 1;
+}
+
+function distanceToBlock(point, block) {
+  const dx = Math.max(
+    finite(block.x) - point.x,
+    0,
+    point.x - finite(block.x) - finite(block.width)
+  );
+  const dy = Math.max(
+    finite(block.y) - point.y,
+    0,
+    point.y - finite(block.y) - finite(block.height)
+  );
+  return Math.hypot(dx, dy);
+}
+
+function distanceToSegment(point, from, to) {
+  const segment = { x: to.x - from.x, y: to.y - from.y };
+  const lengthSquared = segment.x * segment.x + segment.y * segment.y;
+  if (lengthSquared < 0.000001) {
+    return Math.hypot(point.x - from.x, point.y - from.y);
+  }
+  const projection = Math.max(0, Math.min(1,
+    ((point.x - from.x) * segment.x +
+      (point.y - from.y) * segment.y) / lengthSquared
+  ));
+  return Math.hypot(
+    point.x - (from.x + segment.x * projection),
+    point.y - (from.y + segment.y * projection)
+  );
+}
+
+// This is the same local preferred-route heuristic as Stage 02: inspect the
+// nearest blocker, compare both directions around all four padded sides, and
+// discount routes already reinforced by footfall.
+function preferredWaypoint(self, goal, obstacles, field, params, vec, world) {
+  const forward = vec.unit(vec.subtract(goal, self.position));
+  const detectionPadding = self.radius + 3;
+  const initialRoutePadding = Math.max(0, self.radius - 0.1);
+  const routePadding = self.radius + 0.5;
+  const waypointPadding = self.radius + 4;
+  let threat = null;
+  let threatScore = Infinity;
+
+  for (const block of obstacles) {
+    const centre = {
+      x: finite(block.x) + finite(block.width) / 2,
+      y: finite(block.y) + finite(block.height) / 2
+    };
+    const ahead = vec.dot(vec.subtract(centre, self.position), forward);
+    const distance = distanceToBlock(self.position, block);
+    const blocking = segmentCrossesBlock(
+      self.position,
+      goal,
+      block,
+      detectionPadding
+    );
+    const nearby = distance < waypointPadding * 1.35 && ahead > -waypointPadding;
+    if (!blocking && !nearby) continue;
+    const score = distance + (blocking ? 0 : waypointPadding * 4);
+    const key = String(block.id);
+    if (
+      score < threatScore - 0.000001 ||
+      (Math.abs(score - threatScore) <= 0.000001 && key < String(threat?.id))
+    ) {
+      threat = block;
+      threatScore = score;
+    }
+  }
+
+  if (!threat) return goal;
+  const left = finite(threat.x) - waypointPadding;
+  const right = finite(threat.x) + finite(threat.width) + waypointPadding;
+  const top = finite(threat.y) - waypointPadding;
+  const bottom = finite(threat.y) + finite(threat.height) + waypointPadding;
+  const corners = [
+    { x: left, y: top },
+    { x: right, y: top },
+    { x: right, y: bottom },
+    { x: left, y: bottom }
+  ];
+  const sides = [[0, 1], [1, 2], [2, 3], [3, 0]];
+  const sample = typeof field?.sample === "function"
+    ? (point) => Math.max(0, Math.min(1, finite(field.sample(point))))
+    : () => 0;
+  const insideWorld = (point) => {
+    const margin = self.radius + 2;
+    return point.x >= margin && point.x <= world.width - margin &&
+      point.y >= margin && point.y <= world.height - margin;
+  };
+  const clearPoint = (point) => insideWorld(point) && obstacles.every((block) =>
+    distanceToBlock(point, block) >= self.radius + 2
+  );
+  const clearInitial = (to) => !segmentCrossesBlock(
+    self.position,
+    to,
+    threat,
+    initialRoutePadding
+  );
+  const clearsThreat = (from, to) => !segmentCrossesBlock(
+    from,
+    to,
+    threat,
+    routePadding
+  );
+  const clearCorners = corners.map(clearPoint);
+  let best = null;
+
+  for (let sideIndex = 0; sideIndex < sides.length; sideIndex += 1) {
+    const [a, b] = sides[sideIndex];
+    for (let order = 0; order < 2; order += 1) {
+      const firstIndex = order === 0 ? a : b;
+      const secondIndex = order === 0 ? b : a;
+      if (!clearCorners[firstIndex] || !clearCorners[secondIndex]) continue;
+      const first = corners[firstIndex];
+      const second = corners[secondIndex];
+      const onCorridor =
+        distanceToSegment(self.position, first, second) < waypointPadding &&
+        clearInitial(second);
+      const waypoint = onCorridor ? second : first;
+      if (
+        !clearInitial(waypoint) ||
+        (!onCorridor && !clearsThreat(first, second)) ||
+        !clearsThreat(second, goal)
+      ) continue;
+      const middle = vec.midpoint(first, second);
+      const distance = vec.distance(self.position, waypoint) +
+        (onCorridor ? 0 : vec.distance(first, second)) +
+        vec.distance(second, goal);
+      const trace = (sample(first) + sample(middle) + sample(second)) / 3;
+      const route = {
+        waypoint,
+        score: distance - trace * params.trailInfluence * 180,
+        tieRank: ((sideIndex + self.id) % 4) * 2 + order
+      };
+      const clearlyShorter = !best || route.score < best.score - 0.75;
+      const tied = best && Math.abs(route.score - best.score) <= 0.75;
+      if (clearlyShorter || (tied && route.tieRank < best.tieRank)) best = route;
+    }
+  }
+
+  if (best) return best.waypoint;
+  // When a parcel cluster invalidates every two-corner template, keep the
+  // walker tangent to its nearest face instead of steering through it.
+  const faces = [
+    { distance: Math.abs(self.position.y - finite(threat.y)), corners: [0, 1], normal: { x: 0, y: -1 } },
+    { distance: Math.abs(self.position.x - finite(threat.x) - finite(threat.width)), corners: [1, 2], normal: { x: 1, y: 0 } },
+    { distance: Math.abs(self.position.y - finite(threat.y) - finite(threat.height)), corners: [2, 3], normal: { x: 0, y: 1 } },
+    { distance: Math.abs(self.position.x - finite(threat.x)), corners: [3, 0], normal: { x: -1, y: 0 } }
+  ].sort((first, second) => first.distance - second.distance);
+  const escapes = faces[0].corners
+    .filter((index) => clearCorners[index] && clearInitial(corners[index]))
+    .map((index, order) => ({
+      waypoint: corners[index],
+      score: vec.distance(self.position, corners[index]) +
+        vec.distance(corners[index], goal) -
+        sample(corners[index]) * params.trailInfluence * 120,
+      tieRank: (order + self.id) % 2
+    }))
+    .sort((first, second) => first.score - second.score || first.tieRank - second.tieRank);
+  return escapes[0]?.waypoint || {
+    x: self.position.x + faces[0].normal.x * (routePadding + 2),
+    y: self.position.y + faces[0].normal.y * (routePadding + 2)
+  };
+}
+
+function behave({ self, destination, obstacles, field, params, vec, world, land, circulation }) {
+  const stop = { acceleration: { x: 0, y: 0 } };
+  const goalX = Number(destination?.x);
+  const goalY = Number(destination?.y);
+  const hasJourney = Number.isFinite(goalX) && Number.isFinite(goalY);
+  const walkingTarget = hasJourney
+    ? preferredWaypoint(
+      self,
+      { x: goalX, y: goalY },
+      Array.isArray(obstacles) ? obstacles : [],
+      field,
+      params,
+      vec,
+      world
+    )
+    : null;
+  const movement = walkingTarget
+    ? { acceleration: vec.seek(self, walkingTarget, params.strength) }
+    : stop;
+
+  // Land is optional while switching scenarios. Movement remains a complete
+  // gate-to-gate rule even if the settlement layer is unavailable.
+  if (!land?.enabled || !Array.isArray(land.cells)) return movement;
 
   function resolveCell(value) {
     const id = idOf(value);
@@ -389,30 +596,63 @@ function behave({ self, params, vec, world, tick, land }) {
     return land.cells.find((cell) => idOf(cell) === id) || null;
   }
 
-  function steer(cell, action = {}) {
-    if (!cell) return { acceleration: { x: 0, y: 0 }, ...action };
+  function circulationCell(cell) {
+    const id = idOf(cell);
+    const observed = typeof circulation?.cell === "function"
+      ? circulation.cell(id)
+      : null;
+    const explicitlyPublic = typeof circulation?.isPublic === "function"
+      ? circulation.isPublic(id) === true
+      : false;
+    const role = explicitlyPublic ? "road" : String(
+      observed?.role ?? cell.circulation?.role ?? cell.role ?? "open"
+    );
+    const centre = centreOf(cell);
+    const sampledUse = typeof field?.sample === "function"
+      ? field.sample(centre)
+      : 0;
+    const observedUse = typeof circulation?.usage === "function"
+      ? circulation.usage(id)
+      : observed?.use;
+    const useValue = observedUse && typeof observedUse === "object"
+      ? observedUse.use
+      : observedUse;
     return {
-      acceleration: vec.seek(self, centreOf(cell), params.strength),
-      ...action
+      role,
+      use: Math.max(0, finite(useValue ?? cell.movementUse, sampledUse))
     };
   }
 
-  // Finish the one reservation this owner already holds before evaluating
-  // another site. The engine, not this rule, decides when the waiting period
-  // has elapsed and exposes that as claimable.
+  // A claimant approaches the public edge of an existing reservation, never
+  // its centre. Until the reservation matures it remains part of the same
+  // walkable open surface, so a busy route can still be captured and displaced.
   const reservation = land.reservation || null;
   if (reservation) {
     const reservedId = idOf(reservation);
-    const reservedCell = resolveCell(reservedId);
-    const claimableAt = finite(
-      reservation.claimableAtTick ?? reservation.claimableAt,
-      Number.POSITIVE_INFINITY
-    );
-    const claimable = reservation.claimable === true || tick >= claimableAt;
-    if (claimable && reservedId) {
-      return steer(reservedCell, { claimLand: { landId: reservedId } });
+    const route = typeof circulation?.route === "function"
+      ? circulation.route(reservedId)
+      : null;
+    if (
+      reservation.claimable === true &&
+      route?.reachable !== false &&
+      route?.fronted === true &&
+      route?.arrived === true &&
+      reservedId
+    ) {
+      return { ...movement, claimLand: { landId: reservedId } };
     }
-    return steer(reservedCell);
+    const waypointX = Number(route?.waypoint?.x);
+    const waypointY = Number(route?.waypoint?.y);
+    if (Number.isFinite(waypointX) && Number.isFinite(waypointY)) {
+      return {
+        acceleration: vec.seek(
+          self,
+          { x: waypointX, y: waypointY },
+          params.strength
+        )
+      };
+    }
+    return movement;
   }
 
   const mineInput = typeof land.mine === "function" ? land.mine() : land.mine;
@@ -428,7 +668,11 @@ function behave({ self, params, vec, world, tick, land }) {
     const reservedBy = cell.reservedBy ?? cell.reservation?.ownerId ??
       cell.tenure?.reservation?.ownerId;
     const state = cell.state ?? cell.tenure?.state;
-    return owner === undefined || owner === null
+    const publicState = circulationCell(cell);
+    const privateLand = publicState.role !== "road" &&
+      publicState.role !== "road-reserved" &&
+      publicState.role !== "private";
+    return privateLand && (owner === undefined || owner === null)
       ? (reservedBy === undefined || reservedBy === null) &&
         state !== "claimed" && state !== "reserved"
       : false;
@@ -441,38 +685,37 @@ function behave({ self, params, vec, world, tick, land }) {
     for (const owned of mine) {
       for (const neighbour of land.neighbors(idOf(owned)) || []) {
         const cell = resolveCell(neighbour);
-        if (isAvailable(cell)) candidatesById.set(idOf(cell), cell);
+        if (isAvailable(cell) && distanceToBlock(self.position, cell) <= params.siteReach) {
+          candidatesById.set(idOf(cell), cell);
+        }
       }
     }
   } else {
     for (const entry of land.cells) {
       const cell = resolveCell(entry);
-      if (isAvailable(cell)) candidatesById.set(idOf(cell), cell);
+      if (isAvailable(cell) && distanceToBlock(self.position, cell) <= params.siteReach) {
+        candidatesById.set(idOf(cell), cell);
+      }
     }
   }
 
   const candidates = [...candidatesById.values()];
-  if (candidates.length === 0) {
-    return { acceleration: { x: 0, y: 0 } };
-  }
+  if (candidates.length === 0) return movement;
 
   const maximumCost = Math.max(
     1,
     ...land.cells.map((entry) => attribute(resolveCell(entry) || {}, "cost", 0))
   );
-  const worldDiagonal = Math.max(1, Math.hypot(world.width, world.height));
   let best = null;
 
   for (const cell of candidates) {
-    const centre = centreOf(cell);
-    const travel = Math.hypot(
-      centre.x - self.position.x,
-      centre.y - self.position.y
-    ) / worldDiagonal;
     const access = Math.max(0, Math.min(1, attribute(cell, "access")));
     const amenity = Math.max(0, Math.min(1, attribute(cell, "amenity")));
     const terrain = Math.max(0, Math.min(1, attribute(cell, "terrain")));
     const cost = Math.max(0, attribute(cell, "cost")) / maximumCost;
+    const movementUse = Math.max(0, Math.min(1, circulationCell(cell).use));
+    const proximity = Math.max(0, 1 - distanceToBlock(self.position, cell) /
+      Math.max(1, params.siteReach));
 
     const neighbours = typeof land.neighbors === "function"
       ? land.neighbors(idOf(cell)) || []
@@ -489,8 +732,9 @@ function behave({ self, params, vec, world, tick, land }) {
       access * params.accessWeight +
       amenity * params.amenityWeight -
       (cost * 0.75 + terrain * 0.25) * params.costWeight -
-      travel * 1.15 +
-      compactGrowth * params.growthBias;
+      movementUse * params.throughRoutePenalty +
+      compactGrowth * params.growthBias +
+      proximity * 0.35;
     const id = idOf(cell);
 
     if (
@@ -498,15 +742,15 @@ function behave({ self, params, vec, world, tick, land }) {
       score > best.score + 0.000001 ||
       (Math.abs(score - best.score) <= 0.000001 && id < best.id)
     ) {
-      best = { id, cell, score };
+      best = { id, score };
     }
   }
 
-  if (!best) return { acceleration: { x: 0, y: 0 } };
+  if (!best) return movement;
   // Bids communicate relative suitability. Exact ties are resolved centrally
   // using the scenario seed, tick, land ID and agent ID.
   const bid = Math.max(0.01, Math.round((best.score + 4) * 1_000) / 1_000);
-  return steer(best.cell, { reserveLand: { landId: best.id, bid } });
+  return { ...movement, reserveLand: { landId: best.id, bid } };
 }`;
 
 export const scenarios = [
@@ -736,24 +980,24 @@ export const scenarios = [
   },
   {
     id: "territory-growth",
-    title: "Territory · reserve and grow parcels",
-    shortTitle: "Grow a connected territory",
-    kicker: "Claims emerge from competition",
+    title: "Territory · paths become streets",
+    shortTitle: "Grow streets and territory",
+    kicker: "Movement reserves the public realm",
     stage: { number: "03", label: "Territory laboratory / 03" },
     description:
-      "Each person evaluates the same fixed land grid for access, amenities, terrain, price, and travel distance. They submit reservations without changing the map directly; contested sites are settled together, successful reservations must mature before they can be claimed, and later cells must share an edge with the owner's parcel.",
+      "People make repeated trips while their preferred routes reinforce a fading trace. Frequently crossed cells can mature into public streets; nearby sites can also be reserved for private parcels, so settlement may capture an active route and force later walkers to find another way around.",
     steps: [
-      "Score the unclaimed sites",
-      "Submit one reservation bid",
-      "Claim it, then grow edge-to-edge",
+      "Walk between weighted gates",
+      "Reinforce the preferred route",
+      "Compete for cells as streets or parcels",
     ],
     question:
-      "Before running: will accessible land attract one compact centre, several competing territories, or a fragmented edge? Change one preference, reset with the same seed, and compare who wins the contested cells.",
+      "Before running: which traces will survive as streets, and where will a private reservation interrupt a busy route? Change route protection, reset with the same seed, and compare how the network adapts.",
     relationMode: "none",
     matchLabel: "claimed land held in compact parcels",
     summaryMetrics: [
       { label: "Claimed land", key: "claimedShare", format: "fraction-percent", detail: "buildable cells with an owner" },
-      { label: "Land conflicts", key: "landConflicts", format: "integer", detail: "contested reservation targets" },
+      { label: "Public streets", key: "roadShare", format: "fraction-percent", detail: "cells established by repeated movement" },
     ],
     metric: {
       label: "Parcel compactness",
@@ -773,17 +1017,16 @@ export const scenarios = [
     environment: {
       land: {
         enabled: true,
-        origin: { x: 140, y: 84 },
-        columns: 19,
-        rows: 12,
-        cellSize: 36,
-        gap: 2,
+        origin: { x: 20, y: 10 },
+        columns: 24,
+        rows: 15,
+        cellSize: 40,
+        gap: 0,
         attributes: {
           access: {
             sources: [
-              { id: "west-road", x: 140, y: 311, strength: 1 },
-              { id: "east-road", x: 860, y: 311, strength: 1 },
-              { id: "market-crossing", x: 500, y: 311, strength: 0.72 },
+              { id: "west-gate", x: 20, y: 325, strength: 1 },
+              { id: "east-gate", x: 980, y: 325, strength: 1 },
             ],
             falloff: 360,
           },
@@ -803,31 +1046,70 @@ export const scenarios = [
             accessMultiplier: 0.55,
             amenityMultiplier: 0.25,
           },
-          frontage: { edges: ["west", "east"] },
+          frontage: { edges: ["north", "east", "south", "west"] },
         },
         policy: {
           reservationTicks: 18,
-          expiryTicks: 90,
+          expiryTicks: 900,
           requireContiguous: true,
           maxReservationsPerOwner: 1,
         },
       },
+      destinations: [
+        { id: "west", label: "West gate", x: 34, y: 325, radius: 28, weight: 1 },
+        { id: "east", label: "East gate", x: 966, y: 325, radius: 28, weight: 1 },
+        { id: "north", label: "North gate", x: 500, y: 24, radius: 24, weight: 0.55 },
+        { id: "south", label: "South gate", x: 500, y: 626, radius: 24, weight: 0.55 },
+      ],
+      journeys: {
+        enabled: true,
+        spawnAtDestinations: true,
+        arrivalRadius: 25,
+      },
+      field: {
+        enabled: true,
+        cellSize: 10,
+        deposit: 1,
+        decay: 0.006,
+        diffusion: 0.04,
+      },
+      circulation: {
+        enabled: true,
+        sourceLayer: "land",
+        entrySides: ["west", "east"],
+        usePersistence: 0.94,
+        reserveThreshold: 2.5,
+        releaseThreshold: 1.25,
+        maturityTicks: 12,
+        releaseTicks: 24,
+        maxNewPerTick: 2,
+        roadPreference: 0.45,
+        trailPreference: 0.5,
+        arrivalRadius: 12,
+      },
     },
     params: {
+      trailInfluence: 1,
+      throughRoutePenalty: 1.1,
+      siteReach: 52,
       accessWeight: 1.4,
       amenityWeight: 0.9,
       costWeight: 1.1,
       growthBias: 1.3,
       strength: 2.2,
       maxSpeed: 80,
+      fieldPersistence: 0.994,
     },
     controls: [
+      { key: "trailInfluence", label: "Preferred routes", min: 0, max: 2, step: 0.05, format: "decimal-2" },
+      { key: "throughRoutePenalty", label: "Protect busy routes", min: 0, max: 3, step: 0.1 },
       { key: "accessWeight", label: "Access preference", min: 0, max: 3, step: 0.1 },
       { key: "amenityWeight", label: "Amenity preference", min: 0, max: 3, step: 0.1 },
       { key: "costWeight", label: "Cost sensitivity", min: 0, max: 3, step: 0.1 },
       { key: "growthBias", label: "Compact growth", min: 0, max: 3, step: 0.1 },
       { key: "strength", label: "Response strength", min: 0.4, max: 4, step: 0.1 },
       { key: "maxSpeed", label: "Walking speed", min: 30, max: 150, step: 2 },
+      { key: "fieldPersistence", label: "Trace persistence", min: 0.96, max: 0.999, step: 0.001, format: "percent" },
     ],
   },
 ].map((scenario) => ({

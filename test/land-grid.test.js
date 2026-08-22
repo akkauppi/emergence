@@ -45,8 +45,8 @@ function claim(agentId, landId) {
   return submit(agentId, parseLandIntent({ claimLand: { landId } }));
 }
 
-function commit(state, intents, tick) {
-  const transition = state.stage(intents, tick);
+function commit(state, intents, tick, coordination) {
+  const transition = state.stage(intents, tick, coordination);
   assert.equal(transition.ok, true, transition.error);
   state.commit(transition);
   return transition;
@@ -153,6 +153,104 @@ test("higher bids win and seeded ties ignore submission order", () => {
   assert.deepEqual(reordered.frame(1), first.frame(1));
   assert.deepEqual(reordered.checksumState(), first.checksumState());
   assert.equal(first.frame(1).events.filter((event) => event.type === "conflict").length, 1);
+});
+
+test("public movement and private tenure arbitrate the same cell atomically", () => {
+  const publicWinner = new LandGridState(config(), { seed: 41 });
+  const publicTransition = commit(
+    publicWinner,
+    [reserve(7, "land-1-1", 3)],
+    0,
+    { publicCandidates: [{ landId: "land-1-1", bid: 8, use: 8 }] },
+  );
+
+  assert.deepEqual(publicTransition.acceptedPublicLandIds, ["land-1-1"]);
+  assert.equal(publicWinner.frame(1).cells[4].state, "unclaimed");
+  assert.deepEqual(
+    publicTransition.events.filter((event) => event.type === "road-land-conflict"),
+    [{
+      type: "road-land-conflict",
+      tick: 1,
+      landId: "land-1-1",
+      publicBid: 8,
+      privateBid: 3,
+      privateOwner: 7,
+      winner: "public",
+    }],
+  );
+  assert.ok(publicTransition.events.some((event) => (
+    event.type === "rejection"
+    && event.ownerId === 7
+    && event.reason === "lost-public-conflict"
+  )));
+
+  const privateWinner = new LandGridState(config(), { seed: 41 });
+  const privateTransition = commit(
+    privateWinner,
+    [reserve(7, "land-1-1", 8)],
+    0,
+    { publicCandidates: [{ landId: "land-1-1", bid: 3, use: 3 }] },
+  );
+
+  assert.deepEqual(privateTransition.acceptedPublicLandIds, []);
+  assert.equal(privateWinner.frame(1).cells[4].reservedBy, 7);
+  assert.ok(privateTransition.events.some((event) => (
+    event.type === "road-land-conflict" && event.winner === "private"
+  )));
+  assert.equal(privateWinner.metrics().roadLandConflicts, 1);
+});
+
+test("a strong public route can preempt a reservation, but never a claim", () => {
+  const state = new LandGridState(config(), { seed: 59 });
+  commit(state, [reserve(4, "land-0-1", 2)], 0);
+
+  const preemption = commit(
+    state,
+    [claim(4, "land-0-1")],
+    1,
+    { publicCandidates: [{ landId: "land-0-1", bid: 9, use: 9 }] },
+  );
+  assert.deepEqual(preemption.acceptedPublicLandIds, ["land-0-1"]);
+  assert.equal(state.frame(2).cells[1].state, "unclaimed");
+  assert.ok(preemption.events.some((event) => (
+    event.type === "road-preemption" && event.ownerId === 4
+  )));
+  assert.ok(preemption.events.some((event) => (
+    event.type === "rejection" && event.action === "claim" && event.reason === "public-way"
+  )));
+  assert.equal(state.metrics().roadPreemptions, 1);
+
+  const claimed = new LandGridState(config(), { seed: 59 });
+  reserveAndClaim(claimed, 4, "land-0-1", 0);
+  const attemptedRoad = commit(
+    claimed,
+    [],
+    2,
+    { publicCandidates: [{ landId: "land-0-1", bid: 999, use: 999 }] },
+  );
+  assert.deepEqual(attemptedRoad.acceptedPublicLandIds, []);
+  assert.equal(claimed.frame(3).cells[1].ownerId, 4);
+  assert.equal(claimed.metrics().roadPreemptions, 0);
+});
+
+test("established public cells reject private reservations", () => {
+  const state = new LandGridState(config());
+  const transition = commit(
+    state,
+    [reserve(2, "land-2-1", 999)],
+    0,
+    { publicCells: ["land-2-1"] },
+  );
+
+  assert.equal(state.frame(1).cells[7].state, "unclaimed");
+  assert.deepEqual(transition.events, [{
+    type: "rejection",
+    tick: 1,
+    ownerId: 2,
+    landId: "land-2-1",
+    action: "reserve",
+    reason: "public-way",
+  }]);
 });
 
 test("reservations mature and expire on explicit tick boundaries", () => {
