@@ -73,6 +73,9 @@ test("circulation policy normalizes into a bounded immutable replay value", () =
     flowReleaseTicks: 0,
     pressureDetourRatio: -1,
     pressureDetourDistance: -1,
+    pressureStallTicks: 0,
+    pressureStallMovementRatio: 4,
+    pressureStallContribution: -1,
     easementUsePersistence: 4,
     easementAcquisitionThreshold: -1,
     easementAcquisitionTicks: 0,
@@ -96,6 +99,9 @@ test("circulation policy normalizes into a bounded immutable replay value", () =
   assert.equal(normalized.flowReleaseTicks, 1);
   assert.equal(normalized.pressureDetourRatio, 1);
   assert.equal(normalized.pressureDetourDistance, 0);
+  assert.equal(normalized.pressureStallTicks, 1);
+  assert.equal(normalized.pressureStallMovementRatio, 1);
+  assert.equal(normalized.pressureStallContribution, 0.001);
   assert.equal(normalized.easementUsePersistence, 1);
   assert.equal(normalized.easementAcquisitionThreshold, 0.1);
   assert.equal(normalized.easementAcquisitionTicks, 1);
@@ -299,6 +305,155 @@ test("only a costly accumulated detour creates pressure and an easement", () => 
   assert.equal(land.frame(4).cells[4].ownerId, 7);
   assert.equal(circulation.frame().metrics.easementCount, 1);
   assert.ok(circulation.lastEvents.some((event) => event.type === "pressure-easement"));
+});
+
+test("sustained per-agent collision frustration creates pressure only after its grace period", () => {
+  const { land, circulation } = createStores({
+    columns: 3,
+    rows: 3,
+    circulation: {
+      pressurePersistence: 1,
+      pressureDetourRatio: 10,
+      pressureDetourDistance: 10_000,
+      pressureStallTicks: 2,
+      pressureStallMovementRatio: 0.4,
+      pressureStallContribution: 1,
+      easementPressureThreshold: 2,
+    },
+  });
+  let tenure = land.stage([
+    { agentId: 7, type: "reserve", landId: "land-1-1", bid: 1 },
+  ], 0);
+  land.commit(tenure);
+  tenure = land.stage([
+    { agentId: 7, type: "claim", landId: "land-1-1" },
+  ], 1);
+  land.commit(tenure);
+
+  const blocked = {
+    agentId: 2,
+    from: { x: 13, y: 30 },
+    to: { x: 13, y: 30 },
+    attemptedTo: { x: 15, y: 30 },
+    blockedLandId: "land-1-1",
+    pressureTo: { x: 50, y: 30 },
+  };
+  let transition = circulation.stage([blocked], 2);
+  circulation.commit(transition);
+  assert.equal(circulation.cell("land-1-1").pressure, 0);
+  assert.equal(circulation.metrics().blockedAgents, 1);
+  assert.equal(circulation.metrics().frustratedAgents, 0);
+  assert.equal(circulation.metrics().maxStalledTicks, 1);
+
+  // Real movement clears this agent's accumulated stall state. A later brief
+  // collision must serve the grace period again instead of opening a crossing.
+  transition = circulation.stage([{
+    ...blocked,
+    from: { x: 13, y: 30 },
+    to: { x: 15, y: 30 },
+    attemptedTo: { x: 15, y: 30 },
+    blockedLandId: null,
+  }], 3);
+  circulation.commit(transition);
+  assert.equal(circulation.metrics().blockedAgents, 0);
+  assert.equal(circulation.metrics().maxStalledTicks, 0);
+
+  const blockedAgain = {
+    ...blocked,
+    from: { x: 15, y: 30 },
+    to: { x: 15, y: 30 },
+    attemptedTo: { x: 17, y: 30 },
+  };
+  transition = circulation.stage([blockedAgain], 4);
+  circulation.commit(transition);
+  assert.equal(circulation.cell("land-1-1").pressure, 0);
+
+  transition = circulation.stage([blockedAgain], 5);
+  circulation.commit(transition);
+  assert.equal(circulation.cell("land-1-1").pressure, 1);
+  assert.equal(circulation.easement("land-1-1"), null);
+
+  transition = circulation.stage([blockedAgain], 6);
+  circulation.commit(transition);
+  const easement = circulation.easement("land-1-1");
+  assert.ok(easement);
+  assert.ok(easement.pressure >= 2);
+  assert.deepEqual(
+    circulation.lastEvents.find((event) => event.type === "pressure-easement"),
+    {
+      type: "pressure-easement",
+      tick: 7,
+      landId: "land-1-1",
+      pressure: 2.5,
+      cause: "stall",
+      detourDistance: 0,
+      detourRatio: 1,
+      stalledTicks: 3,
+    },
+  );
+});
+
+test("a rejected parcel-splitting acquisition leaves its narrow easement open", () => {
+  const { land, circulation } = createStores({
+    columns: 3,
+    rows: 3,
+    circulation: {
+      pressurePersistence: 1,
+      pressureDetourRatio: 10,
+      pressureDetourDistance: 10_000,
+      pressureStallTicks: 1,
+      pressureStallMovementRatio: 1,
+      pressureStallContribution: 1,
+      easementPressureThreshold: 1,
+      easementUsePersistence: 1,
+      easementAcquisitionThreshold: 1,
+      easementAcquisitionTicks: 1,
+    },
+  });
+  let tick = 0;
+  for (const landId of ["land-1-0", "land-1-1", "land-1-2"]) {
+    let tenure = land.stage([{ agentId: 7, type: "reserve", landId, bid: 1 }], tick);
+    land.commit(tenure);
+    tick += 1;
+    tenure = land.stage([{ agentId: 7, type: "claim", landId }], tick);
+    land.commit(tenure);
+    tick += 1;
+  }
+
+  let transition = circulation.stage([{
+    agentId: 2,
+    from: { x: 13, y: 30 },
+    to: { x: 13, y: 30 },
+    attemptedTo: { x: 15, y: 30 },
+    blockedLandId: "land-1-1",
+    pressureTo: { x: 50, y: 30 },
+  }], tick);
+  circulation.commit(transition);
+  tick += 1;
+  assert.ok(circulation.easement("land-1-1"));
+
+  transition = circulation.stage([{
+    agentId: 2,
+    from: { x: 10, y: 30 },
+    to: { x: 50, y: 30 },
+  }], tick);
+  const tenure = land.stage([], tick, {
+    publicCells: circulation.publicLandIds(),
+    publicCandidates: transition.publicCandidates,
+    publicAcquisitions: transition.publicAcquisitions,
+  });
+  assert.deepEqual(transition.publicAcquisitions.map(({ landId }) => landId), ["land-1-1"]);
+  assert.deepEqual(tenure.acceptedPublicAcquisitionLandIds, []);
+  circulation.commit(transition, {
+    acceptedLandIds: tenure.acceptedPublicLandIds,
+    acceptedAcquisitionLandIds: tenure.acceptedPublicAcquisitionLandIds,
+  });
+  land.commit(tenure);
+
+  const middle = land.frame(tick + 1).cells.find((cell) => cell.id === "land-1-1");
+  assert.equal(middle.ownerId, 7);
+  assert.ok(circulation.easement("land-1-1"));
+  assert.equal(circulation.easement("land-1-1").acquired, false);
 });
 
 test("sustained easement traffic acquires a safe parcel edge as public right-of-way", () => {

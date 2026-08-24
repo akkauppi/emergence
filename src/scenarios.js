@@ -1045,7 +1045,7 @@ export const scenarios = [
     kicker: "Movement reserves the public realm",
     stage: { number: "03", label: "Territory laboratory / 03" },
     description:
-      "People keep a rough destination bearing but choose each step from a bounded forward view, adapting to nearby traces and obstacles. Their continuous trajectories reinforce a fading off-grid flow network: only repeatedly used traces mature into streets, quiet streets degenerate, surviving frontage attracts parcels, and costly detours can create public crossings.",
+      "People keep a rough destination bearing but choose each step from a bounded forward view, adapting to nearby traces and obstacles. Their continuous trajectories reinforce a fading off-grid flow network: only repeatedly used traces mature into streets, quiet streets degenerate, surviving frontage attracts parcels, and costly detours or prolonged blockage can create public crossings.",
     steps: [
       "Adapt locally within a forward view",
       "Promote only well-beaten paths",
@@ -1159,6 +1159,9 @@ export const scenarios = [
         pressureDetourRatio: 1.18,
         pressureDetourDistance: 60,
         pressureContribution: 0.24,
+        pressureStallTicks: 75,
+        pressureStallMovementRatio: 0.3,
+        pressureStallContribution: 0.14,
         easementPressureThreshold: 14,
         easementWidth: 15,
         easementUsePersistence: 0.97,

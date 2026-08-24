@@ -205,12 +205,19 @@ its internal tenure index, while movement and visible paths use continuous geome
   claimed cell on the still-desired line receives that pressure, including its crossing
   position and angle. Once the pressure threshold is crossed, the site receives a narrow
   easement and becomes permeable without immediately removing ownership.
+- A second, per-agent pressure path covers genuine immobility that the detour measure
+  cannot see. Collision resolution identifies the claimed cell that prevented an intended
+  move. If one walker achieves at most 30% of that intended displacement for 75 consecutive
+  ticks, she begins adding pressure to that exact cell; her contribution ramps while the
+  stall continues and resets when movement resumes. Brief collisions, idle agents, and
+  ordinary slow progress therefore do not create easements.
 - Easement traffic has its own fading use memory. Sustained use can propose public
   acquisition of the crossed cell. Land and circulation resolve that proposal atomically:
   ownership is retired only when removing the cell leaves the owner's remaining parcel
-  connected. The permanent crossing remains an off-grid line and becomes a public anchor
-  from which local support streets may grow; it does not render the full cadastral cell as
-  an orthogonal street block.
+  connected. A rejected acquisition leaves the already-permeable private easement intact.
+  The permanent crossing remains an off-grid line and becomes a public anchor from which
+  local support streets may grow; it does not render the full cadastral cell as an
+  orthogonal street block.
 - The canvas distinguishes continuous traces, established paths, easements, plot
   reservations, contested cells, and claims. The unclaimed cadastral checkerboard is
   hidden in this mode so the movement geometry, rather than the storage topology,
@@ -223,7 +230,8 @@ Initial land sequence:
 2. Promote only repeatedly reinforced traces, and retire streets after sustained low use.
 3. After the warm-up, seed private parcels beside the busiest eligible frontage.
 4. Grow each parcel contiguously toward a bounded target area, balancing compactness and suitability.
-5. Accumulate pressure only when claimed land imposes a substantial journey detour.
+5. Accumulate pressure when claimed land imposes a substantial journey detour or a
+   sustained collision stall.
 6. Open a narrow easement, then acquire it as public right-of-way only after sustained use.
 7. Resolve road, plot, easement, and acquisition events deterministically and expose them for inspection.
 

@@ -354,6 +354,60 @@ test("a pressure easement makes claimed land permeable while ownership remains",
   assert.equal(engine.land.frame(engine.tick).cells[cell.index].ownerId, 7);
 });
 
+test("engine collisions let a persistently stalled walker open a claimed cell", () => {
+  const environment = {
+    ...scenario.environment,
+    land: {
+      ...scenario.environment.land,
+      policy: {
+        ...scenario.environment.land.policy,
+        reservationTicks: 0,
+      },
+    },
+    circulation: {
+      ...scenario.environment.circulation,
+      pressurePersistence: 1,
+      pressureDetourRatio: 10,
+      pressureDetourDistance: 10_000,
+      pressureStallTicks: 2,
+      pressureStallMovementRatio: 1,
+      pressureStallContribution: 1,
+      easementPressureThreshold: 1,
+    },
+  };
+  const engine = createProbeEngine(
+    () => ({ acceleration: { x: 240, y: 0 } }),
+    { environment, population: 1 },
+  );
+  const landId = "land-7-12";
+  const cell = engine.land.config.cells.find((candidate) => candidate.id === landId);
+  let tenure = engine.land.stage([{ agentId: 7, type: "reserve", landId, bid: 1 }], 0);
+  engine.land.commit(tenure);
+  tenure = engine.land.stage([{ agentId: 7, type: "claim", landId }], 1);
+  engine.land.commit(tenure);
+
+  const walker = engine.agents[0];
+  walker.x = cell.x - walker.radius;
+  walker.y = cell.center.y;
+  walker.vx = 0;
+  walker.vy = 0;
+  walker.destinationId = "east";
+
+  assert.equal(engine.step().ok, true);
+  assert.equal(engine.circulation.easement(landId), null);
+  assert.equal(engine.circulation.metrics().maxStalledTicks, 1);
+  assert.equal(engine.step().ok, true);
+  assert.ok(engine.circulation.easement(landId));
+  assert.ok(engine.circulation.lastEvents.some(
+    (event) => event.type === "pressure-easement" && event.cause === "stall",
+  ));
+  assert.equal(engine.land.frame(engine.tick).cells[cell.index].ownerId, 7);
+
+  const blockedX = engine.agents[0].x;
+  assert.equal(engine.step().ok, true);
+  assert.ok(engine.agents[0].x > blockedX, "the new easement must make the claimed cell permeable");
+});
+
 test("all agents decide from the same frozen land and circulation-use snapshot", () => {
   const observedLandArrays = [];
   const observedLandCells = [];

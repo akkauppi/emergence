@@ -678,6 +678,7 @@ export class SimulationEngine {
 
     const damping = Math.exp(-0.18 * this.dt);
     const attemptedPositions = new Array(this.agents.length);
+    const blockedLandIds = new Array(this.agents.length).fill(null);
     const nextAgents = this.agents.map((agent, index) => {
       const acceleration = intents[index];
       let velocity = limitVector(
@@ -709,15 +710,28 @@ export class SimulationEngine {
 
       attemptedPositions[index] = frozenVector(x, y);
 
+      let strongestLandCorrection = 0;
       for (const obstacle of collisionObstacles) {
         // A pressure-created easement makes this cadastral cell permeable.
         // The frame retains the narrower observed crossing as its visible
         // right-of-way while movement is no longer resolved as a hard wall.
         if (obstacle.easement) continue;
+        const beforeX = x;
+        const beforeY = y;
         const collision = resolveCircleAgainstRectangle({ x, y }, velocity, radius, obstacle);
         x = collision.position.x;
         y = collision.position.y;
         velocity = collision.velocity;
+        if (collision.collided && obstacle.landId) {
+          const correction = Math.hypot(x - beforeX, y - beforeY);
+          const currentLandId = blockedLandIds[index];
+          if (correction > strongestLandCorrection + EPSILON
+            || (Math.abs(correction - strongestLandCorrection) <= EPSILON
+              && (currentLandId === null || String(obstacle.landId).localeCompare(currentLandId) < 0))) {
+            strongestLandCorrection = correction;
+            blockedLandIds[index] = String(obstacle.landId);
+          }
+        }
       }
 
       x = clamp(x, radius, this.width - radius);
@@ -742,6 +756,7 @@ export class SimulationEngine {
         from: frozenVector(agent.x, agent.y),
         to: frozenVector(nextAgents[index].x, nextAgents[index].y),
         attemptedTo: attemptedPositions[index],
+        blockedLandId: blockedLandIds[index],
         pressureTo: this.#currentDestination(agent),
       })),
       this.tick,

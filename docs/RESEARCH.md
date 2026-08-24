@@ -12,7 +12,9 @@ Territory 03 keeps one causal chain:
 ```text
 bounded movement → fading traces → maintained streets → frontage settlement
        ↑                                                   ↓
-       └──────── costly detours → easements → acquisition ─┘
+       └─ costly detours or prolonged stalls → easements ─┘
+                                            ↓
+                               sustained-use acquisition
 ```
 
 The selected next mechanism is **bounded-view, locally adaptive wayfinding**.
@@ -64,9 +66,41 @@ angle more consequential than depth. The angle is exposed as the single new less
 control; the other implementation values stay fixed so the experiment does not become
 a collection of unrelated knobs.
 
-Settlement timing and suitability, trace promotion and degeneration, detour-gated
-pressure, easement formation, and acquisition are unchanged. This isolates the effect
-of information available to walkers.
+That bounded-wayfinding slice left settlement timing and suitability, trace promotion
+and degeneration, easement formation, and acquisition unchanged. This isolated the
+effect of information available to walkers before the stall-pressure follow-up below.
+
+## Implemented stall-pressure rule
+
+Detour pressure alone had a blind spot: a walker held almost stationary at a claimed
+parcel added no extra travel, so the rule recorded zero lost-progress pressure. The
+movement resolver now reports both the attempted pre-collision position and the exact
+claimed cell responsible for the strongest collision correction.
+
+Stall pressure is deliberately narrower than general delay:
+
+1. Each journey keeps its own consecutive stall count; agents do not share frustration.
+2. A tick counts only when the walker intended to move, a claimed cell corrected that
+   move, and actual displacement was at most 30% of intended displacement.
+3. Successful movement or a changed journey resets the count, so waiting, slowing near
+   a destination, and brief contacts do not create crossings.
+4. After a 75-tick grace period, that walker contributes pressure to the cell that
+   physically blocked her. The contribution rises with continued immobility, up to four
+   times its base value. Several blocked walkers still aggregate naturally on one cell.
+5. Crossing the existing pressure threshold opens the same narrow easement used by the
+   detour rule. Ownership remains in place, but movement becomes permeable immediately.
+
+This also separates two rules that look similar in the picture. An easement may pass
+through the middle of a parcel without subdividing its legal ownership. Only later,
+after sustained traffic proposes permanent public acquisition, does the contiguity
+guard apply. If removing that cadastral cell would fragment the owner's remaining
+holding, acquisition is rejected but the already-open easement remains. Parcel
+subdivision can therefore remain a separate tenure experiment rather than a prerequisite
+for resolving a pedestrian deadlock.
+
+The circulation frame now reports currently blocked agents, agents beyond the grace
+period, and the maximum per-agent stall age. These values and the per-agent journey
+state participate in deterministic replay checksums.
 
 ## Deterministic reference comparison
 
@@ -102,6 +136,19 @@ On the development machine both 720-tick runs took approximately nine seconds. T
 bounded rule limits obstacle clearance to a local subset and did not introduce a
 material runtime regression in this reference run.
 
+### Stall-pressure reference run
+
+A later seed-2026 run at tick 2400 compared bounded wayfinding before and after stall
+pressure. The pre-change run completed 176 trips, had 15 walkers below 1 world unit per
+second, and contained 15 easements. With the default stall rule it completed 171 trips,
+had 12 walkers below that speed, and contained 16 easements. One easement was caused by
+a single collision stall that reached 223 ticks; the other 15 still came from detours.
+
+This is evidence that the rule resolves its intended deadlock, not that it improves every
+global outcome. The changed crossing also changes later settlement and routes, and the
+single run completed five fewer trips. The rule should stay a bounded escape mechanism;
+broader throughput claims require a multi-seed, longer-horizon comparison.
+
 ## Acceptance and falsification
 
 The bounded-view slice is useful if, across several fixed seeds:
@@ -110,6 +157,7 @@ The bounded-view slice is useful if, across several fixed seeds:
 - multiple approach directions and non-orthogonal segments survive;
 - easements arise at repeated local conflicts rather than immediately reproducing the
   direct origin–destination line;
+- sustained collision stalls eventually resolve while brief contacts create no pressure;
 - replay, tick chunking, and agent storage order remain deterministic; and
 - runtime remains comparable to the complete-route baseline.
 

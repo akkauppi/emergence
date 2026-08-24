@@ -69,6 +69,7 @@ export function normalizeCirculationConfig(input) {
     0.01,
     1_000_000,
   );
+  const pressureContribution = clamp(finiteOr(input.pressureContribution, 0.2), 0.001, 100);
   return Object.freeze({
     enabled: true,
     sourceLayer: String(input.sourceLayer ?? input.source?.layer ?? "land"),
@@ -98,9 +99,16 @@ export function normalizeCirculationConfig(input) {
     pressurePersistence: clamp(finiteOr(input.pressurePersistence, 0.975), 0, 1),
     pressureDetourRatio: clamp(finiteOr(input.pressureDetourRatio, 1.15), 1, 10),
     pressureDetourDistance: clamp(finiteOr(input.pressureDetourDistance, 40), 0, 10_000),
+    pressureStallTicks: integerIn(input.pressureStallTicks, 75, 1, 1_000_000),
+    pressureStallMovementRatio: clamp(finiteOr(input.pressureStallMovementRatio, 0.3), 0, 1),
     easementPressureThreshold: clamp(finiteOr(input.easementPressureThreshold, 18), 0.1, 1_000_000),
     easementWidth: clamp(finiteOr(input.easementWidth, 13), 2, 100),
-    pressureContribution: clamp(finiteOr(input.pressureContribution, 0.2), 0.001, 100),
+    pressureContribution,
+    pressureStallContribution: clamp(
+      finiteOr(input.pressureStallContribution, pressureContribution * 0.6),
+      0.001,
+      100,
+    ),
     easementUsePersistence: clamp(finiteOr(input.easementUsePersistence, 0.97), 0, 1),
     easementAcquisitionThreshold: clamp(
       finiteOr(input.easementAcquisitionThreshold, 20),
@@ -784,10 +792,16 @@ export class PublicCirculation {
       const to = pointOf(submitted?.to);
       const attemptedTo = pointOf(submitted?.attemptedTo) ?? to;
       const pressureTo = pointOf(submitted?.pressureTo);
+      const submittedBlockedLandId = typeof submitted?.blockedLandId === "string"
+        ? submitted.blockedLandId
+        : null;
+      const blockedLandId = this.#indexById.has(submittedBlockedLandId)
+        ? submittedBlockedLandId
+        : null;
       if (!Number.isSafeInteger(agentId) || agentId < 0 || !from || !to || !attemptedTo) {
         return Object.freeze({ ok: false, error: "Every circulation segment requires an agentId and finite from/to points.", events: freezeArray([]) });
       }
-      canonical.push({ agentId, from, to, attemptedTo, pressureTo });
+      canonical.push({ agentId, from, to, attemptedTo, blockedLandId, pressureTo });
     }
     canonical.sort((first, second) => first.agentId - second.agentId
       || first.from.x - second.from.x || first.from.y - second.from.y
@@ -801,6 +815,7 @@ export class PublicCirculation {
         segment.detourDistance = 0;
         segment.detourRatio = 1;
         segment.stepExtraDistance = 0;
+        segment.stalledTicks = 0;
         continue;
       }
       const remainingBefore = Math.hypot(
@@ -815,6 +830,14 @@ export class PublicCirculation {
         segment.to.x - segment.from.x,
         segment.to.y - segment.from.y,
       );
+      const attemptedMovement = Math.hypot(
+        segment.attemptedTo.x - segment.from.x,
+        segment.attemptedTo.y - segment.from.y,
+      );
+      const collisionCorrection = Math.hypot(
+        segment.attemptedTo.x - segment.to.x,
+        segment.attemptedTo.y - segment.to.y,
+      );
       const prior = journeys.get(segment.agentId);
       const sameTarget = prior
         && Math.hypot(prior.targetX - segment.pressureTo.x, prior.targetY - segment.pressureTo.y) <= 0.01;
@@ -828,6 +851,16 @@ export class PublicCirculation {
       segment.detourDistance = Math.max(0, projectedDistance - directDistance);
       segment.detourRatio = Math.max(1, projectedDistance / directDistance);
       segment.stepExtraDistance = Math.max(0, movement - (remainingBefore - remainingAfter));
+      // Detour pressure cannot observe a walker pinned in place because that
+      // journey adds no travel distance. Count only collision-specific failed
+      // movement, per agent, so waiting and ordinary slow motion remain inert.
+      const blockedIntent = segment.blockedLandId !== null
+        && attemptedMovement > 0.05
+        && collisionCorrection > 0.05
+        && movement <= attemptedMovement * this.config.pressureStallMovementRatio + EPSILON;
+      segment.stalledTicks = blockedIntent
+        ? (continuous ? Math.max(0, prior.stalledTicks ?? 0) : 0) + 1
+        : 0;
       journeys.set(segment.agentId, {
         targetX: segment.pressureTo.x,
         targetY: segment.pressureTo.y,
@@ -835,6 +868,8 @@ export class PublicCirculation {
         traveledDistance,
         detourDistance: segment.detourDistance,
         detourRatio: segment.detourRatio,
+        stalledTicks: segment.stalledTicks,
+        blockedLandId: blockedIntent ? segment.blockedLandId : null,
         lastX: segment.to.x,
         lastY: segment.to.y,
       });
@@ -895,32 +930,54 @@ export class PublicCirculation {
       }
     }
     for (const segment of canonical) {
-      if (!segment.pressureTo
-        || segment.detourRatio < this.config.pressureDetourRatio
-        || segment.detourDistance < this.config.pressureDetourDistance
-        || segment.stepExtraDistance <= 0.05) continue;
+      if (!segment.pressureTo) continue;
+      const detourPressure = segment.detourRatio >= this.config.pressureDetourRatio
+        && segment.detourDistance >= this.config.pressureDetourDistance
+        && segment.stepExtraDistance > 0.05;
+      const stallPressure = segment.blockedLandId !== null
+        && segment.stalledTicks >= this.config.pressureStallTicks;
+      if (!detourPressure && !stallPressure) continue;
       const pressureTarget = segment.pressureTo;
       const dx = pressureTarget.x - segment.from.x;
       const dy = pressureTarget.y - segment.from.y;
       if (Math.hypot(dx, dy) <= EPSILON) continue;
       const angle = Math.atan2(dy, dx);
-      const blockedIndex = this.#segmentCells(segment.from, pressureTarget)
-        .filter((index) => this.#isClaimed(index) && !easements[index])
-        .sort((first, second) => (
-          Math.hypot(
-            segment.from.x - this.cells[first].center.x,
-            segment.from.y - this.cells[first].center.y,
-          ) - Math.hypot(
-            segment.from.x - this.cells[second].center.x,
-            segment.from.y - this.cells[second].center.y,
-          ) || compareIds(this.cells[first].id, this.cells[second].id)
-        ))[0];
+      const stalledIndex = stallPressure ? this.#indexById.get(segment.blockedLandId) : undefined;
+      const validStalledIndex = stalledIndex !== undefined
+        && this.#isClaimed(stalledIndex)
+        && !easements[stalledIndex]
+        ? stalledIndex
+        : undefined;
+      const blockedIndex = validStalledIndex ?? (detourPressure
+        ? this.#segmentCells(segment.from, pressureTarget)
+          .filter((index) => this.#isClaimed(index) && !easements[index])
+          .sort((first, second) => (
+            Math.hypot(
+              segment.from.x - this.cells[first].center.x,
+              segment.from.y - this.cells[first].center.y,
+            ) - Math.hypot(
+              segment.from.x - this.cells[second].center.x,
+              segment.from.y - this.cells[second].center.y,
+            ) || compareIds(this.cells[first].id, this.cells[second].id)
+          ))[0]
+        : undefined);
       if (blockedIndex === undefined) continue;
-      const contribution = this.config.pressureContribution * clamp(
+      let contribution = detourPressure ? this.config.pressureContribution * clamp(
         segment.stepExtraDistance / Math.max(1, this.config.flowResolution * 0.2),
         0.25,
         2.5,
-      );
+      ) : 0;
+      if (validStalledIndex === blockedIndex) {
+        // A single prolonged stall can eventually open a crossing, while the
+        // shared cell pressure still lets several frustrated walkers do so
+        // sooner. The cap keeps pathological stalls bounded.
+        const overdueTicks = segment.stalledTicks - this.config.pressureStallTicks;
+        contribution += this.config.pressureStallContribution * clamp(
+          1 + overdueTicks / this.config.pressureStallTicks,
+          1,
+          4,
+        );
+      }
       pressures[blockedIndex] += contribution;
       pressureAxisX[blockedIndex] += Math.cos(angle * 2) * contribution;
       pressureAxisY[blockedIndex] += Math.sin(angle * 2) * contribution;
@@ -941,8 +998,12 @@ export class PublicCirculation {
         tick: nextTick,
         landId: this.cells[blockedIndex].id,
         pressure: pressures[blockedIndex],
+        cause: detourPressure && validStalledIndex === blockedIndex
+          ? "detour-and-stall"
+          : validStalledIndex === blockedIndex ? "stall" : "detour",
         detourDistance: segment.detourDistance,
         detourRatio: segment.detourRatio,
+        stalledTicks: segment.stalledTicks,
       }));
     }
     const publicAcquisitions = freezeArray(this.cells
@@ -1230,6 +1291,10 @@ export class PublicCirculation {
     const journeys = [...this.journeyByAgent.values()];
     const totalDetourDistance = journeys.reduce((sum, journey) => sum + journey.detourDistance, 0);
     const totalDetourRatio = journeys.reduce((sum, journey) => sum + journey.detourRatio, 0);
+    const blockedJourneys = journeys.filter((journey) => (journey.stalledTicks ?? 0) > 0);
+    const frustratedJourneys = blockedJourneys.filter(
+      (journey) => journey.stalledTicks >= this.config.pressureStallTicks,
+    );
     return Object.freeze({
       roadCells,
       roadReservedCells,
@@ -1254,6 +1319,12 @@ export class PublicCirculation {
       acquiredRightOfWays,
       easementAcquisitions: this.counters.easementAcquisitions,
       activeJourneys: journeys.length,
+      blockedAgents: blockedJourneys.length,
+      frustratedAgents: frustratedJourneys.length,
+      maxStalledTicks: blockedJourneys.reduce(
+        (maximum, journey) => Math.max(maximum, journey.stalledTicks),
+        0,
+      ),
       meanJourneyDetourDistance: journeys.length > 0 ? totalDetourDistance / journeys.length : 0,
       maxJourneyDetourDistance: journeys.reduce(
         (maximum, journey) => Math.max(maximum, journey.detourDistance),
