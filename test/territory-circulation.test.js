@@ -60,12 +60,17 @@ test("circulation policy normalizes into a bounded immutable replay value", () =
     entrySides: ["left", "south", "bogus", "left"],
     usePersistence: 4,
     reserveThreshold: -2,
+    formationTicks: 0,
     releaseThreshold: 99,
     maturityTicks: -5,
     releaseTicks: 0,
     maxNewPerTick: 999,
     roadPreference: 2,
     trailPreference: -1,
+    flowPathThreshold: 4,
+    flowFormationTicks: 0,
+    flowReleaseThreshold: 99,
+    flowReleaseTicks: 0,
   });
 
   assert.ok(Object.isFrozen(normalized));
@@ -73,12 +78,17 @@ test("circulation policy normalizes into a bounded immutable replay value", () =
   assert.deepEqual(normalized.entrySides, ["south", "west"]);
   assert.equal(normalized.usePersistence, 1);
   assert.equal(normalized.reserveThreshold, 0.001);
+  assert.equal(normalized.formationTicks, 1);
   assert.equal(normalized.releaseThreshold, 0.001);
   assert.equal(normalized.maturityTicks, 0);
   assert.equal(normalized.releaseTicks, 1);
   assert.equal(normalized.maxNewPerTick, 256);
   assert.equal(normalized.roadPreference, 0.95);
   assert.equal(normalized.trailPreference, 0);
+  assert.equal(normalized.flowPathThreshold, 4);
+  assert.equal(normalized.flowFormationTicks, 1);
+  assert.equal(normalized.flowReleaseThreshold, 4);
+  assert.equal(normalized.flowReleaseTicks, 1);
   assert.equal(normalizeCirculationConfig({ enabled: false }), null);
 });
 
@@ -107,6 +117,22 @@ test("movement can reserve only a threshold-crossing cell connected to the prior
     segment(land, 0, "land-1-0", "land-1-4"),
   ], 1);
   assert.deepEqual(second.publicCandidates.map((candidate) => candidate.landId), ["land-1-2"]);
+});
+
+test("a cell must remain well used before it can enter the public network", () => {
+  const { land, circulation } = createStores({
+    circulation: { formationTicks: 2, maxNewPerTick: 8 },
+  });
+  let transition = circulation.stage([
+    segment(land, 0, "land-1-0", "land-1-4"),
+  ], 0);
+  assert.deepEqual(transition.publicCandidates, []);
+  circulation.commit(transition);
+
+  transition = circulation.stage([
+    segment(land, 0, "land-1-0", "land-1-4"),
+  ], 1);
+  assert.deepEqual(transition.publicCandidates.map((candidate) => candidate.landId), ["land-1-1"]);
 });
 
 test("only candidates accepted by atomic land arbitration become public", () => {
@@ -181,6 +207,40 @@ test("continuous flow edges retain the angle of actual movement", () => {
   assert.ok(flowEdge);
   assert.ok(Math.abs(flowEdge.x2 - flowEdge.x1) > 1);
   assert.ok(Math.abs(flowEdge.y2 - flowEdge.y1) > 1);
+});
+
+test("continuous traces require repeated use to become streets and fade after quiet use", () => {
+  const { circulation } = createStores({
+    circulation: {
+      flowPersistence: 0,
+      flowTraceThreshold: 0.1,
+      flowPathThreshold: 1,
+      flowFormationTicks: 3,
+      flowReleaseThreshold: 0.5,
+      flowReleaseTicks: 2,
+    },
+  });
+  const movement = [{
+    agentId: 3,
+    from: { x: 5, y: 5 },
+    to: { x: 35, y: 25 },
+  }];
+
+  for (let tick = 0; tick < 2; tick += 1) {
+    circulation.commit(circulation.stage(movement, tick));
+    assert.equal(circulation.frame().edges.find((edge) => edge.flow)?.status, "trace");
+  }
+  circulation.commit(circulation.stage(movement, 2));
+  assert.equal(circulation.frame().edges.find((edge) => edge.flow)?.status, "road");
+  assert.ok(circulation.lastEvents.some((event) => event.type === "flow-promotion"));
+
+  circulation.commit(circulation.stage([], 3));
+  assert.equal(circulation.frame().edges.find((edge) => edge.flow)?.status, "road");
+  circulation.commit(circulation.stage([], 4));
+  assert.equal(circulation.frame().edges.some((edge) => edge.flow), false);
+  assert.ok(circulation.lastEvents.some((event) => event.type === "flow-degeneration"));
+  assert.equal(circulation.metrics().flowPromotions, 1);
+  assert.equal(circulation.metrics().flowDegenerations, 1);
 });
 
 test("sustained blocked pressure creates an easement without removing ownership", () => {
@@ -258,6 +318,30 @@ test("public reservations mature under use and release after sustained disuse", 
   fading.circulation.commit(transition);
   assert.equal(fading.circulation.cell("land-1-1").role, "open");
   assert.equal(fading.circulation.lastEvents.at(-1).type, "road-release");
+});
+
+test("an established street degenerates after sustained low use while its entry remains", () => {
+  const { land, circulation } = createStores({
+    circulation: {
+      usePersistence: 0,
+      maturityTicks: 0,
+      releaseThreshold: 0.5,
+      releaseTicks: 2,
+    },
+  });
+  let transition = circulation.stage([
+    segment(land, 0, "land-1-0", "land-1-2"),
+  ], 0);
+  acceptAll(circulation, transition);
+  assert.equal(circulation.cell("land-1-1").role, "road");
+
+  circulation.commit(circulation.stage([], 1));
+  assert.equal(circulation.cell("land-1-1").role, "road");
+  circulation.commit(circulation.stage([], 2));
+  assert.equal(circulation.cell("land-1-1").role, "open");
+  assert.equal(circulation.cell("land-1-0").role, "road");
+  assert.ok(circulation.lastEvents.some((event) => event.type === "road-degeneration"));
+  assert.equal(circulation.metrics().streetDegenerations, 1);
 });
 
 test("release hysteresis never strands a downstream public branch", () => {

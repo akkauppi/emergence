@@ -408,7 +408,7 @@ function renderTerritoryInspector(frame) {
   const expiry = Number(policy.expiryTicks ?? policy.reservationExpiryTicks);
   ui.territoryPolicy.textContent = `One active plot reservation per person · highest priority wins · seeded tie-breaks${
     Number.isFinite(maturity) ? ` · matures after ${maturity} ticks` : ""
-  }${Number.isFinite(expiry) ? ` · expires after ${expiry} ticks` : ""} · settlement follows busy frontage · sustained blocked demand can open a public easement.`;
+  }${Number.isFinite(expiry) ? ` · expires after ${expiry} ticks` : ""} · only well-beaten traces establish streets · quiet streets fade · blocked demand can open an easement.`;
 }
 
 function boundedInteger(input, minimum, maximum, fallback) {
@@ -978,6 +978,8 @@ function updateCanvasDescription(force = false) {
     ?? state.frame.metrics.roadReservations
     ?? 0;
   const activeMovementCells = state.frame.metrics.activeMovementCells ?? 0;
+  const establishedFlowEdges = state.frame.metrics.establishedFlowEdges ?? 0;
+  const flowDegenerations = state.frame.metrics.flowDegenerations ?? 0;
   const roadLandConflicts = state.frame.metrics.roadLandConflicts
     ?? state.frame.metrics.circulationConflicts
     ?? 0;
@@ -988,7 +990,9 @@ function updateCanvasDescription(force = false) {
       state.frame.metrics.landOwners ?? 0
     } landholders; ${roadCells} public-way cells${roadReservedCells > 0 ? `, ${roadReservedCells} pending` : ""}; ${
       activeMovementCells
-    } actively used route cells; ${
+    } actively used route cells; ${establishedFlowEdges} established path segments; ${
+      flowDegenerations
+    } paths faded; ${
       roadLandConflicts
     } road/plot conflicts.`
     : state.scenario.environment?.field?.enabled
@@ -1017,7 +1021,7 @@ function updateCanvasInstruction(mode = "default") {
   } else if (state.perturbed) {
     ui.canvasInstruction.textContent = "Manual perturbation applied · reset to reproduce the seeded run.";
   } else if (territoryAvailable()) {
-    ui.canvasInstruction.textContent = "Click a person or parcel to inspect · continuous traces become paths · pressure can open easements.";
+    ui.canvasInstruction.textContent = "Click a person or parcel to inspect · well-beaten traces become streets · quiet streets fade.";
   } else {
     ui.canvasInstruction.textContent = "Click a person to inspect · drag a person to perturb the group.";
   }
@@ -1172,7 +1176,7 @@ function loadScenario(scenario, { preserveSeed = true } = {}) {
   const hasJourneys = Boolean(scenario.environment?.journeys?.enabled);
   const hasSocialRelations = scenario.relationMode !== "none";
   const hasLand = territoryAvailable(scenario);
-  ui.legendSelfLabel.textContent = hasLand ? "trace → public way" : "selected";
+  ui.legendSelfLabel.textContent = hasLand ? "trace ⇄ street" : "selected";
   ui.legendAItem.hidden = !hasLand && !hasJourneys && !hasSocialRelations;
   ui.legendBItem.hidden = !hasLand && !hasJourneys && !hasSocialRelations;
   ui.legendCItem.hidden = !hasLand;

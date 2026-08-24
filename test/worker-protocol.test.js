@@ -99,7 +99,7 @@ test("journey behavior receives its environment after worker reset", () => {
   assert.equal(Number.isFinite(stepMessages.at(-1).frame.metrics.trailConcentration), true);
 });
 
-test("territory worker frames clone, grow emergent streets, reset, and replay", () => {
+test("territory worker frames clone, mature and retire streets, reset, and replay", () => {
   const scenario = getScenario("territory-growth");
   const beforeInitialize = messages.length;
   send({
@@ -162,14 +162,16 @@ test("territory worker frames clone, grow emergent streets, reset, and replay", 
   assert.equal(initialFrame.metrics.roadReservedCells, 0);
 
   const beforeEvolution = messages.length;
-  send({ type: "step", worldRevision: 5, count: 180 });
+  send({ type: "step", worldRevision: 5, count: 360 });
   const evolutionMessages = messages.slice(beforeEvolution);
   assert.equal(evolutionMessages.some((message) => message.type === "runtimeError"), false);
   const evolvedFrame = evolutionMessages.at(-1).frame;
-  assert.equal(evolvedFrame.tick, 180);
+  assert.equal(evolvedFrame.tick, 360);
   assert.ok(evolvedFrame.metrics.activeMovementCells > 0);
   assert.ok(evolvedFrame.circulation.cells.some((cell) => cell.use > 0));
   assert.ok(evolvedFrame.metrics.roadCells + evolvedFrame.metrics.roadReservedCells > 2);
+  assert.ok(evolvedFrame.metrics.establishedFlowEdges > 0);
+  assert.ok(evolvedFrame.metrics.flowDegenerations > 0);
   assert.ok(evolvedFrame.metrics.landClaims > 0);
   const evolvedLand = new Map(evolvedFrame.land.cells.map((cell) => [cell.id, cell]));
   for (const cell of evolvedFrame.circulation.cells.filter((entry) => entry.role !== "open")) {
@@ -208,11 +210,11 @@ test("territory worker frames clone, grow emergent streets, reset, and replay", 
   assert.equal(messages.length, beforeStaleControls);
 
   const beforeReplay = messages.length;
-  send({ type: "step", worldRevision: 6, count: 180 });
+  send({ type: "step", worldRevision: 6, count: 360 });
   const replayMessages = messages.slice(beforeReplay);
   assert.equal(replayMessages.some((message) => message.type === "runtimeError"), false);
   const replayFrame = replayMessages.at(-1).frame;
-  assert.equal(replayFrame.tick, 180);
+  assert.equal(replayFrame.tick, 360);
   assert.equal(replayFrame.checksum, evolvedFrame.checksum);
   assert.deepEqual(replayFrame.land, evolvedFrame.land);
   assert.deepEqual(replayFrame.circulation, evolvedFrame.circulation);

@@ -64,12 +64,18 @@ export function normalizeCirculationConfig(input) {
     .map(normalizedSide)
     .filter(Boolean));
   const reserveThreshold = clamp(finiteOr(input.reserveThreshold, 2.5), 0.001, 1_000_000);
+  const flowPathThreshold = clamp(
+    finiteOr(input.flowPathThreshold, reserveThreshold * 1.4),
+    0.01,
+    1_000_000,
+  );
   return Object.freeze({
     enabled: true,
     sourceLayer: String(input.sourceLayer ?? input.source?.layer ?? "land"),
     entrySides: freezeArray(SIDE_ORDER.filter((side) => requestedSides.has(side))),
     usePersistence: clamp(finiteOr(input.usePersistence, 0.94), 0, 1),
     reserveThreshold,
+    formationTicks: integerIn(input.formationTicks, 1, 1, 1_000_000),
     releaseThreshold: clamp(finiteOr(input.releaseThreshold, reserveThreshold * 0.5), 0, reserveThreshold),
     maturityTicks: integerIn(input.maturityTicks, 12, 0, 1_000_000),
     releaseTicks: integerIn(input.releaseTicks, 24, 1, 1_000_000),
@@ -81,7 +87,14 @@ export function normalizeCirculationConfig(input) {
     flowAngleBins: integerIn(input.flowAngleBins, 16, 4, 64),
     flowPersistence: clamp(finiteOr(input.flowPersistence, 0.965), 0, 1),
     flowTraceThreshold: clamp(finiteOr(input.flowTraceThreshold, 0.35), 0.01, 1_000_000),
-    flowPathThreshold: clamp(finiteOr(input.flowPathThreshold, reserveThreshold * 1.4), 0.01, 1_000_000),
+    flowPathThreshold,
+    flowFormationTicks: integerIn(input.flowFormationTicks, 1, 1, 1_000_000),
+    flowReleaseThreshold: clamp(
+      finiteOr(input.flowReleaseThreshold, flowPathThreshold * 0.5),
+      0,
+      flowPathThreshold,
+    ),
+    flowReleaseTicks: integerIn(input.flowReleaseTicks, 60, 1, 1_000_000),
     pressurePersistence: clamp(finiteOr(input.pressurePersistence, 0.975), 0, 1),
     easementPressureThreshold: clamp(finiteOr(input.easementPressureThreshold, 18), 0.1, 1_000_000),
     easementWidth: clamp(finiteOr(input.easementWidth, 13), 2, 100),
@@ -208,6 +221,7 @@ export class PublicCirculation {
     this.useByCell = new Float64Array(count);
     this.loadByCell = new Float64Array(count);
     this.reservedAtByCell = new Int32Array(count).fill(-1);
+    this.formingByCell = new Int32Array(count);
     this.belowThresholdByCell = new Int32Array(count);
     this.pressureByCell = new Float64Array(count);
     this.pressureAxisXByCell = new Float64Array(count);
@@ -216,7 +230,14 @@ export class PublicCirculation {
     this.pressurePointYByCell = new Float64Array(count);
     this.easementByCell = new Uint8Array(count);
     this.flowSegments = new Map();
-    this.counters = { reservations: 0, promotions: 0, releases: 0 };
+    this.counters = {
+      reservations: 0,
+      promotions: 0,
+      releases: 0,
+      degenerations: 0,
+      flowPromotions: 0,
+      flowDegenerations: 0,
+    };
     this.revision = 0;
     this.lastEvents = freezeArray([]);
 
@@ -285,6 +306,7 @@ export class PublicCirculation {
       isPublic: this.#isPublicIndex(cell.index),
       use: this.useByCell[cell.index],
       load: this.loadByCell[cell.index],
+      formation: this.formingByCell[cell.index],
       claimed: this.#isClaimed(cell.index),
       pressure: this.pressureByCell[cell.index],
       easement: Boolean(this.easementByCell[cell.index]),
@@ -513,12 +535,12 @@ export class PublicCirculation {
     return result;
   }
 
-  #stageFlow(canonical) {
+  #stageFlow(canonical, tick) {
     const persistence = this.config.flowPersistence;
     const next = new Map();
     for (const [key, segment] of this.flowSegments) {
       const use = segment.use * persistence;
-      if (use < FLOW_MINIMUM_USE) continue;
+      if (use < FLOW_MINIMUM_USE && !segment.street && (segment.formationTicks ?? 0) <= 0) continue;
       next.set(key, {
         ...segment,
         use,
@@ -555,13 +577,64 @@ export class PublicCirculation {
         axisY: (existing?.axisY ?? 0) + Math.sin(angle * 2),
         use,
         load: (existing?.load ?? 0) + 1,
+        street: existing?.street === true,
+        formationTicks: existing?.formationTicks ?? 0,
+        quietTicks: existing?.quietTicks ?? 0,
       });
     }
 
-    if (next.size <= MAX_FLOW_FEATURES) return next;
-    return new Map([...next.entries()]
-      .sort((first, second) => second[1].use - first[1].use || compareIds(first[0], second[0]))
-      .slice(0, MAX_FLOW_FEATURES));
+    const events = [];
+    let promotions = 0;
+    let degenerations = 0;
+    for (const [key, segment] of next) {
+      let street = segment.street === true;
+      let formationTicks = segment.formationTicks ?? 0;
+      let quietTicks = segment.quietTicks ?? 0;
+      if (street) {
+        quietTicks = segment.use < this.config.flowReleaseThreshold ? quietTicks + 1 : 0;
+        if (quietTicks >= this.config.flowReleaseTicks) {
+          street = false;
+          formationTicks = 0;
+          quietTicks = 0;
+          degenerations += 1;
+          events.push(Object.freeze({
+            type: "flow-degeneration",
+            tick,
+            flowId: key,
+            use: segment.use,
+          }));
+        }
+      } else {
+        formationTicks = segment.use >= this.config.flowPathThreshold && segment.load > 0
+          ? formationTicks + 1
+          : Math.max(0, formationTicks - 1);
+        if (formationTicks >= this.config.flowFormationTicks) {
+          street = true;
+          formationTicks = 0;
+          quietTicks = 0;
+          promotions += 1;
+          events.push(Object.freeze({
+            type: "flow-promotion",
+            tick,
+            flowId: key,
+            use: segment.use,
+          }));
+        }
+      }
+      if (!street && segment.use < FLOW_MINIMUM_USE && segment.load === 0) {
+        next.delete(key);
+        continue;
+      }
+      next.set(key, { ...segment, street, formationTicks, quietTicks });
+    }
+
+    const limited = next.size <= MAX_FLOW_FEATURES
+      ? next
+      : new Map([...next.entries()]
+        .sort((first, second) => Number(second[1].street) - Number(first[1].street)
+          || second[1].use - first[1].use || compareIds(first[0], second[0]))
+        .slice(0, MAX_FLOW_FEATURES));
+    return { segments: limited, events, promotions, degenerations };
   }
 
   #easementForIndex(index) {
@@ -674,7 +747,7 @@ export class PublicCirculation {
     canonical.sort((first, second) => first.agentId - second.agentId
       || first.from.x - second.from.x || first.from.y - second.from.y
       || first.to.x - second.to.x || first.to.y - second.to.y);
-    const flowSegments = this.#stageFlow(canonical);
+    const flow = this.#stageFlow(canonical, nextTick);
 
     const loads = new Float64Array(this.cells.length);
     for (const segment of canonical) {
@@ -693,9 +766,12 @@ export class PublicCirculation {
     }
     const roles = this.roleByCell.slice();
     const reservedAt = this.reservedAtByCell.slice();
+    const forming = this.formingByCell.slice();
     const belowThreshold = this.belowThresholdByCell.slice();
     const counters = { ...this.counters };
-    const events = [];
+    counters.flowPromotions += flow.promotions;
+    counters.flowDegenerations += flow.degenerations;
+    const events = [...flow.events];
     const pressures = new Float64Array(this.pressureByCell.length);
     const pressureAxisX = new Float64Array(this.pressureAxisXByCell.length);
     const pressureAxisY = new Float64Array(this.pressureAxisYByCell.length);
@@ -758,6 +834,18 @@ export class PublicCirculation {
     }
     const releaseRequests = [];
     const publicCells = this.publicLandIds();
+    const entryLandIds = new Set(this.entries.map((entry) => entry.landId));
+
+    for (const cell of this.cells) {
+      const index = cell.index;
+      if (this.roleByCell[index] !== OPEN || this.#isClaimed(index)) {
+        forming[index] = 0;
+        continue;
+      }
+      forming[index] = uses[index] >= this.config.reserveThreshold && loads[index] > 0
+        ? Math.min(this.config.formationTicks, forming[index] + 1)
+        : Math.max(0, forming[index] - 1);
+    }
 
     for (const cell of this.cells) {
       const index = cell.index;
@@ -765,26 +853,37 @@ export class PublicCirculation {
       if (this.#isClaimed(index)) {
         roles[index] = OPEN;
         reservedAt[index] = -1;
+        forming[index] = 0;
         belowThreshold[index] = 0;
         counters.releases += 1;
         events.push(Object.freeze({ type: "road-private-displacement", tick: nextTick, landId: cell.id }));
         continue;
       }
-      if (this.roleByCell[index] !== ROAD_RESERVED) continue;
+      if (entryLandIds.has(cell.id)) {
+        belowThreshold[index] = 0;
+        continue;
+      }
       belowThreshold[index] = uses[index] < this.config.releaseThreshold
         ? belowThreshold[index] + 1 : 0;
-      const age = nextTick - reservedAt[index];
-      if (age >= this.config.maturityTicks && uses[index] >= this.config.releaseThreshold) {
-        roles[index] = ROAD;
-        reservedAt[index] = -1;
-        belowThreshold[index] = 0;
-        counters.promotions += 1;
-        events.push(Object.freeze({ type: "road-promotion", tick: nextTick, landId: cell.id }));
+      if (this.roleByCell[index] === ROAD_RESERVED) {
+        const age = nextTick - reservedAt[index];
+        if (age >= this.config.maturityTicks && uses[index] >= this.config.releaseThreshold) {
+          roles[index] = ROAD;
+          reservedAt[index] = -1;
+          belowThreshold[index] = 0;
+          counters.promotions += 1;
+          events.push(Object.freeze({ type: "road-promotion", tick: nextTick, landId: cell.id }));
+        } else if (belowThreshold[index] >= this.config.releaseTicks) {
+          // Defer this until accepted public candidates are known. A cell may
+          // not disappear if it would strand an established or newly accepted
+          // branch away from every entry seed.
+          releaseRequests.push({ index, type: "road-release" });
+        }
       } else if (belowThreshold[index] >= this.config.releaseTicks) {
         // Defer this until accepted public candidates are known. A cell may
         // not disappear if it would strand an established or newly accepted
         // branch away from every entry seed.
-        releaseRequests.push(index);
+        releaseRequests.push({ index, type: "road-degeneration" });
       }
     }
 
@@ -794,6 +893,7 @@ export class PublicCirculation {
         && !this.#isClaimed(index)
         && loads[index] > 0
         && uses[index] >= this.config.reserveThreshold
+        && forming[index] >= this.config.formationTicks
         && cell.neighborIds.some((neighborId) => this.isPublic(neighborId));
     }).map((cell) => ({
       landId: cell.id,
@@ -824,11 +924,12 @@ export class PublicCirculation {
       uses,
       loads,
       reservedAt,
+      forming,
       belowThreshold,
       counters,
       events,
       releaseRequests,
-      flowSegments,
+      flowSegments: flow.segments,
       pressures,
       pressureAxisX,
       pressureAxisY,
@@ -854,6 +955,7 @@ export class PublicCirculation {
         && next.uses[index] >= this.config.releaseThreshold;
       next.roles[index] = immediatelyMature ? ROAD : ROAD_RESERVED;
       next.reservedAt[index] = immediatelyMature ? -1 : transition.tick;
+      next.forming[index] = 0;
       next.belowThreshold[index] = 0;
       next.counters.reservations += 1;
       events.push(Object.freeze({
@@ -870,15 +972,20 @@ export class PublicCirculation {
         events.push(Object.freeze({ type: "road-promotion", tick: transition.tick, landId }));
       }
     }
-    for (const index of next.releaseRequests.sort((first, second) => (
-      compareIds(this.cells[first].id, this.cells[second].id)
+    for (const request of next.releaseRequests.sort((first, second) => (
+      compareIds(this.cells[first.index].id, this.cells[second.index].id)
     ))) {
-      if (next.roles[index] !== ROAD_RESERVED || !this.#canRelease(index, next.roles)) continue;
+      const { index, type } = request;
+      const expectedRole = type === "road-degeneration" ? ROAD : ROAD_RESERVED;
+      if (next.roles[index] !== expectedRole || !this.#canRelease(index, next.roles)) continue;
+      const wasRoad = next.roles[index] === ROAD;
       next.roles[index] = OPEN;
       next.reservedAt[index] = -1;
+      next.forming[index] = 0;
       next.belowThreshold[index] = 0;
       next.counters.releases += 1;
-      events.push(Object.freeze({ type: "road-release", tick: transition.tick, landId: this.cells[index].id }));
+      if (wasRoad) next.counters.degenerations += 1;
+      events.push(Object.freeze({ type, tick: transition.tick, landId: this.cells[index].id }));
     }
     this.#pruneDisconnected(
       next.roles,
@@ -892,6 +999,7 @@ export class PublicCirculation {
     this.useByCell = next.uses;
     this.loadByCell = next.loads;
     this.reservedAtByCell = next.reservedAt;
+    this.formingByCell = next.forming;
     this.belowThresholdByCell = next.belowThreshold;
     this.flowSegments = next.flowSegments;
     this.pressureByCell = next.pressures;
@@ -950,7 +1058,7 @@ export class PublicCirculation {
     const activeFlowEdges = [...this.flowSegments.values()]
       .filter((segment) => segment.use >= this.config.flowTraceThreshold).length;
     const establishedFlowEdges = [...this.flowSegments.values()]
-      .filter((segment) => segment.use >= this.config.flowPathThreshold).length;
+      .filter((segment) => segment.street).length;
     const easementCount = this.easementByCell.reduce((count, active) => count + (active ? 1 : 0), 0);
     return Object.freeze({
       roadCells,
@@ -973,6 +1081,9 @@ export class PublicCirculation {
       activeFlowEdges,
       establishedFlowEdges,
       easementCount,
+      streetDegenerations: this.counters.degenerations,
+      flowPromotions: this.counters.flowPromotions,
+      flowDegenerations: this.counters.flowDegenerations,
     });
   }
 
@@ -999,13 +1110,13 @@ export class PublicCirculation {
       kind: this.entries.some((entry) => entry.landId === cell.id) ? "entry" : "road",
     })));
     const edges = [...this.flowSegments.values()]
-      .filter((segment) => segment.use >= this.config.flowTraceThreshold)
+      .filter((segment) => segment.street || segment.use >= this.config.flowTraceThreshold)
       .map((segment) => {
         const angle = Math.atan2(segment.axisY, segment.axisX) / 2;
         const unitX = Math.cos(angle);
         const unitY = Math.sin(angle);
         const halfLength = this.config.flowResolution * 0.9;
-        const established = segment.use >= this.config.flowPathThreshold;
+        const established = segment.street === true;
         return Object.freeze({
           id: `flow-edge:${segment.key}`,
           from: null,
@@ -1017,7 +1128,7 @@ export class PublicCirculation {
           length: halfLength * 2,
           width: established
             ? clamp(3.5 + Math.log1p(segment.use) * 1.35, 4, 11)
-            : 2.2,
+            : clamp(0.9 + Math.log1p(segment.use) * 0.5, 1.1, 2.2),
           hierarchy: established && segment.use >= this.config.flowPathThreshold * 2
             ? "secondary" : "path",
           status: established ? "road" : "trace",
@@ -1086,6 +1197,7 @@ export class PublicCirculation {
       useByCell: this.useByCell.slice(),
       loadByCell: this.loadByCell.slice(),
       reservedAtByCell: this.reservedAtByCell.slice(),
+      formingByCell: this.formingByCell.slice(),
       belowThresholdByCell: this.belowThresholdByCell.slice(),
       pressureByCell: this.pressureByCell.slice(),
       pressureAxisXByCell: this.pressureAxisXByCell.slice(),

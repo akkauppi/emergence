@@ -178,15 +178,21 @@ its internal tenure index, while movement and visible paths use continuous geome
   raises suitability while traffic through the private site lowers it. This keeps early
   land choices from distorting routes and places parcels beside movement rather than on
   top of it.
-- Only an actively used route cell is eligible for a public-way reservation. A new road
-  cell must share a cardinal edge with an entry or the existing road network.
+- A route cell must remain above the public-use threshold across repeated active ticks
+  before it is eligible for a public-way reservation. A new road cell must share a
+  cardinal edge with an entry or the existing legal support network.
+- Established support streets accumulate quiet ticks below a lower release threshold.
+  A releasable leaf then returns to open land without disconnecting downstream streets;
+  permanent entry seeds keep the remaining network anchored.
 - Public-way and plot intents share an atomic arbitration phase. A cell cannot be both
   a cell-wide road and a private claim. A later pressure easement is a narrower overlay:
   tenure remains, while public passage is allowed through the claimed site.
-- Actual movement contributes short, angle-preserving segments to a persistent flow
-  network. Traces and promoted paths are rendered from those continuous segments, not
-  from cadastral cell centres. The cell network remains only as legal support and for
-  deterministic road/plot arbitration.
+- Actual movement contributes short, angle-preserving segments to a fading flow network.
+  A segment needs repeated active observations above a high-use threshold before it is
+  promoted from a trace to a street. An established street that remains below a lower
+  threshold for long enough degenerates back to a trace. These paths are rendered from
+  continuous segments, not cadastral cell centres; the cell network remains only as
+  legal support and for deterministic road/plot arbitration.
 - Claimed land is a movement obstacle until counterfactual origin–destination demand
   repeatedly crosses it. Blocked pressure retains both crossing position and angle;
   once it passes the policy threshold, the engine records a visible easement and makes
@@ -199,7 +205,7 @@ its internal tenure index, while movement and visible paths use continuous geome
 Initial land sequence:
 
 1. Walk between gates and accumulate continuous, angle-preserving movement traces.
-2. Promote sustained traces to public paths while retaining a deterministic legal support layer.
+2. Promote only repeatedly reinforced traces, and retire streets after sustained low use.
 3. After the warm-up, seed private parcels beside the busiest eligible frontage.
 4. Grow each parcel contiguously toward a bounded target area, balancing compactness and suitability.
 5. Accumulate pressure where direct demand meets claimed land; open an easement when pressure persists.
@@ -212,7 +218,8 @@ maintenance, and coupling claims to occupation or demand. A plot claim still doe
 create a building.
 
 Measurements: parcel area, frontage, compactness, ownership concentration, travel use,
-road cells and growth, network components, reservations, and road/plot conflicts.
+trace and street counts, promotions and degenerations, road cells and growth, network
+components, reservations, and road/plot conflicts.
 
 ### Stage 4 — Urban growth laboratory
 
@@ -277,8 +284,9 @@ Conflicting actions are grouped by target and resolved centrally. A reservation 
 
 ### 0.4 — Streets and settlement
 
-- Preferred-route cell search, movement-use traces, public-way reservation, shared
-  road/plot arbitration, and a persistent cardinal road network (implemented foundation)
+- Preferred-route cell search, fading movement-use traces, hysteretic public-way
+  formation/release, shared road/plot arbitration, and a cardinal legal support network
+  behind continuous street geometry (implemented foundation)
 - Derive variable-width street geometry, hierarchy, capacity, and condition from the
   cell network and its accumulated use
 - Building footprints, occupation, and plot subdivision
@@ -307,8 +315,10 @@ Headless engine tests should establish that:
 - reservations mature and expire at exact documented ticks, no cell is double-owned, every owner's claimed cells remain cardinally connected, and reservation conflicts and expiries replay exactly;
 - parcel-access routes break equal-cost ties deterministically, while ordinary movement
   produces replayable continuous flow segments with multiple orientations;
-- every behavior sees the same prior-tick use snapshot, and only an actively traversed
+- every behavior sees the same prior-tick use snapshot, and only a repeatedly traversed
   cell can receive a valid public-way reservation;
+- continuous traces require repeated high use before promotion, and promoted segments
+  plus non-entry support streets deterministically degenerate after sustained low use;
 - simultaneous public-way and plot intents for one cell produce one deterministic
   winner, never dual allocation, and the result is unchanged by agent storage order;
 - every committed cell-wide public way remains connected to an entry or earlier road;
