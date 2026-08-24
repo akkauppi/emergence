@@ -171,7 +171,8 @@ export function resolveCirculation(value) {
     return id === null || id === undefined ? [] : [identityKey(id)];
   }));
   const landGrid = resolveLandGrid(value);
-  const tracedCells = boundedCollection(source.cells).flatMap((cell) => {
+  const continuousFlow = source.kind === "emergent-flow-network";
+  const tracedCells = (continuousFlow ? [] : boundedCollection(source.cells)).flatMap((cell) => {
     if (!cell || typeof cell !== "object") return [];
     const landId = cell.landId ?? cell.cellId ?? cell.id;
     if (landId === null || landId === undefined || explicitLandIds.has(identityKey(landId))) return [];
@@ -585,6 +586,10 @@ export function drawPublicRealm(context, value, { scale = 1, selectedLandId = nu
 
   context.save();
   for (const region of regions) {
+    if (
+      circulation.circulationKind === "emergent-flow-network"
+      && region.status !== "reserved"
+    ) continue;
     context.fillStyle = circulationRegionFill(region);
     context.fillRect(region.x, region.y, region.width, region.height);
     context.strokeStyle = circulationRegionStroke(region);
@@ -614,12 +619,23 @@ export function drawPublicRealm(context, value, { scale = 1, selectedLandId = nu
   context.lineCap = "round";
   context.lineJoin = "round";
   for (const edge of edges) {
-    context.strokeStyle = "rgba(9, 17, 29, 0.8)";
-    context.lineWidth = edge.width + hairline * 3;
-    strokeCirculationEdge(context, edge);
-    context.strokeStyle = circulationRegionFill({ ...edge, use: edge.load });
+    const status = normalizeCirculationStatus(edge.status);
+    if (status === "road") {
+      context.strokeStyle = "rgba(9, 17, 29, 0.72)";
+      context.lineWidth = edge.width + hairline * 2.5;
+      strokeCirculationEdge(context, edge);
+    }
+    context.strokeStyle = edge.easement
+      ? "rgba(238, 204, 116, 0.9)"
+      : circulationRegionFill({ ...edge, use: edge.use ?? edge.load });
     context.lineWidth = edge.width;
+    context.setLineDash(status === "trace"
+      ? [2.5 / safeScale, 4.5 / safeScale]
+      : edge.easement
+        ? [8 / safeScale, 3 / safeScale]
+        : []);
     strokeCirculationEdge(context, edge);
+    context.setLineDash([]);
   }
 
   const connectedByNode = new Map();
@@ -737,6 +753,7 @@ export function drawTerritory(context, value, {
   if (!grid || !context) return null;
   const safeScale = Math.max(0.0001, finiteNumber(scale, 1));
   const hairline = 1 / safeScale;
+  const continuousFlow = circulationSource(value)?.kind === "emergent-flow-network";
 
   context.save();
   for (const cell of grid.cells) {
@@ -757,11 +774,13 @@ export function drawTerritory(context, value, {
     }
   }
 
-  context.strokeStyle = "rgba(220, 231, 251, 0.18)";
-  context.lineWidth = hairline;
-  for (const cell of grid.cells) {
-    const bounds = landCellBounds(grid, cell);
-    context.strokeRect(bounds.x, bounds.y, bounds.width, bounds.height);
+  if (!continuousFlow) {
+    context.strokeStyle = "rgba(220, 231, 251, 0.18)";
+    context.lineWidth = hairline;
+    for (const cell of grid.cells) {
+      const bounds = landCellBounds(grid, cell);
+      context.strokeRect(bounds.x, bounds.y, bounds.width, bounds.height);
+    }
   }
 
   const boundaries = tenureVisible ? parcelBoundarySegments(grid) : [];

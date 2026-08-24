@@ -151,20 +151,35 @@ test("territory scenario couples an ordinary land grid to journeys, traces, and 
     roadPreference: 0.45,
     trailPreference: 0.5,
     arrivalRadius: 12,
+    flowResolution: 16,
+    flowAngleBins: 24,
+    flowPersistence: 0.972,
+    flowTraceThreshold: 0.45,
+    flowPathThreshold: 3.5,
+    pressurePersistence: 0.98,
+    pressureContribution: 0.18,
+    easementPressureThreshold: 16,
+    easementWidth: 15,
   });
 });
 
-test("walking follows the Stage 02 preferred-route heuristic while settlement favors traffic", () => {
+test("walking follows desire lines while settlement favors busy public frontage", () => {
   const quiet = cell("land-7-2", 100, 300, { access: 0.4, amenity: 0.3 });
   const busy = cell("land-7-1", 60, 300, { access: 0.4, amenity: 0.3 });
+  const busyPath = cell("land-8-1", 60, 340);
+  const quietPath = cell("land-8-2", 100, 340);
   const blocker = { id: "claimed-centre", x: 430, y: 230, width: 140, height: 190 };
   const { decision, seekTargets } = runBehavior({
-    cells: [busy, quiet],
+    cells: [busy, quiet, busyPath, quietPath],
     obstacles: [blocker],
     fieldSample: (point) => point.y < blocker.y ? 1 : 0,
+    neighborIds: {
+      [busy.id]: [busyPath.id],
+      [quiet.id]: [quietPath.id],
+    },
     circulationCells: {
-      [busy.id]: { role: "open", use: 8 },
-      [quiet.id]: { role: "open", use: 3 },
+      [busyPath.id]: { role: "road", use: 8 },
+      [quietPath.id]: { role: "road", use: 3 },
     },
   });
 
@@ -175,17 +190,23 @@ test("walking follows the Stage 02 preferred-route heuristic while settlement fa
   assert.notDeepEqual(seekTargets[0], quiet.center, "settlement never replaces the trip target");
 });
 
-test("an actively used open cell remains reservable, but a public cell does not", () => {
+test("a site beside active frontage remains reservable, but a public cell does not", () => {
   const active = cell("land-7-1", 60, 300, { access: 1, amenity: 1 });
+  const frontage = cell("land-8-1", 60, 340);
   const contested = runBehavior({
-    cells: [active],
-    circulationCells: { [active.id]: { role: "open", use: 3 } },
+    cells: [active, frontage],
+    neighborIds: { [active.id]: [frontage.id] },
+    circulationCells: { [frontage.id]: { role: "road", use: 3 } },
   });
   assert.equal(contested.decision.reserveLand.landId, active.id);
 
   const protectedRoad = runBehavior({
-    cells: [active],
-    circulationCells: { [active.id]: { role: "road", use: 1 } },
+    cells: [active, frontage],
+    neighborIds: { [active.id]: [frontage.id] },
+    circulationCells: {
+      [active.id]: { role: "road", use: 1 },
+      [frontage.id]: { role: "road", use: 3 },
+    },
   });
   assert.equal(protectedRoad.decision.reserveLand, undefined);
 
@@ -193,19 +214,22 @@ test("an actively used open cell remains reservable, but a public cell does not"
   assert.equal(protectedByFacade.decision.reserveLand, undefined);
 });
 
-test("settlement waits for the movement warm-up before reserving traffic sites", () => {
+test("settlement waits for the movement warm-up before reserving frontage sites", () => {
   const active = cell("land-7-1", 60, 300, { access: 1, amenity: 1 });
+  const frontage = cell("land-8-1", 60, 340);
   const early = runBehavior({
-    cells: [active],
+    cells: [active, frontage],
     tick: 0,
-    circulationCells: { [active.id]: { role: "open", use: 8 } },
+    neighborIds: { [active.id]: [frontage.id] },
+    circulationCells: { [frontage.id]: { role: "road", use: 8 } },
   });
   assert.equal(early.decision.reserveLand, undefined);
 
   const settled = runBehavior({
-    cells: [active],
+    cells: [active, frontage],
     tick: 240,
-    circulationCells: { [active.id]: { role: "open", use: 8 } },
+    neighborIds: { [active.id]: [frontage.id] },
+    circulationCells: { [frontage.id]: { role: "road", use: 8 } },
   });
   assert.equal(settled.decision.reserveLand.landId, active.id);
 });

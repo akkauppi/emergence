@@ -363,6 +363,7 @@ export class SimulationEngine {
         width: cell.width,
         height: cell.height,
         landId: cell.id,
+        easement: this.circulation?.easement(cell.id) ?? null,
       }));
     return Object.freeze([...authored, ...privateCells]);
   }
@@ -570,7 +571,8 @@ export class SimulationEngine {
     // Claimed cells close to through-movement on the following tick. Private
     // reservations stay traversable, preserving the road-versus-plot conflict
     // until either use actually wins public status or tenure becomes a claim.
-    const obstacles = this.#movementObstacles();
+    const collisionObstacles = this.#movementObstacles();
+    const obstacles = Object.freeze(collisionObstacles.filter((obstacle) => !obstacle.easement));
     const fieldApi = this.field?.api || Object.freeze({
       enabled: false,
       cols: 0,
@@ -675,6 +677,7 @@ export class SimulationEngine {
     }
 
     const damping = Math.exp(-0.18 * this.dt);
+    const attemptedPositions = new Array(this.agents.length);
     const nextAgents = this.agents.map((agent, index) => {
       const acceleration = intents[index];
       let velocity = limitVector(
@@ -704,7 +707,13 @@ export class SimulationEngine {
         velocity = { ...velocity, y: -Math.abs(velocity.y) * 0.58 };
       }
 
-      for (const obstacle of obstacles) {
+      attemptedPositions[index] = frozenVector(x, y);
+
+      for (const obstacle of collisionObstacles) {
+        // A pressure-created easement makes this cadastral cell permeable.
+        // The frame retains the narrower observed crossing as its visible
+        // right-of-way while movement is no longer resolved as a hard wall.
+        if (obstacle.easement) continue;
         const collision = resolveCircleAgainstRectangle({ x, y }, velocity, radius, obstacle);
         x = collision.position.x;
         y = collision.position.y;
@@ -732,6 +741,8 @@ export class SimulationEngine {
         agentId: agent.id,
         from: frozenVector(agent.x, agent.y),
         to: frozenVector(nextAgents[index].x, nextAgents[index].y),
+        attemptedTo: attemptedPositions[index],
+        pressureTo: this.#currentDestination(agent),
       })),
       this.tick,
     ) || null;
@@ -789,6 +800,7 @@ export class SimulationEngine {
     let target = clampWorldPoint({ x, y }, agent.radius, this.width, this.height);
     let targetVelocity = { x: agent.vx, y: agent.vy };
     for (const obstacle of this.#movementObstacles()) {
+      if (obstacle.easement) continue;
       const collision = resolveCircleAgainstRectangle(target, targetVelocity, agent.radius, obstacle);
       target = collision.position;
       targetVelocity = collision.velocity;

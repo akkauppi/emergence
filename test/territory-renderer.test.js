@@ -275,6 +275,44 @@ test("travel traces, road reservations, and roads draw before plots with conflic
   )));
 });
 
+test("continuous flow draws off-angle paths without exposing the cadastral grid", () => {
+  const { context, operations } = recordingContext();
+  const land = {
+    geometry: { x: 0, y: 0, cellSize: 20, columns: 2, rows: 1 },
+    cells: [
+      { id: "left", row: 0, column: 0, state: "unclaimed" },
+      { id: "right", row: 0, column: 1, state: "unclaimed" },
+    ],
+  };
+  const circulation = {
+    enabled: true,
+    kind: "emergent-flow-network",
+    cells: [{ id: "left", role: "open", use: 8 }],
+    regions: [],
+    nodes: [],
+    edges: [{
+      id: "diagonal",
+      x1: 2,
+      y1: 3,
+      x2: 34,
+      y2: 17,
+      width: 4,
+      hierarchy: "path",
+      status: "road",
+      use: 9,
+      load: 0,
+      capacity: 10,
+    }],
+    entries: [],
+  };
+
+  const resolved = drawTerritoryLayers(context, { land, circulation });
+  assert.equal(resolved.circulation.regions.length, 0);
+  assert.equal(operations.some(([operation]) => operation === "strokeRect"), false);
+  assert.ok(operations.some(([operation, x, y]) => operation === "moveTo" && x === 2 && y === 3));
+  assert.ok(operations.some(([operation, x, y]) => operation === "lineTo" && x === 34 && y === 17));
+});
+
 test("hiding tenure preserves traces and public ways without ownership decoration", () => {
   const { context, operations } = recordingContext();
   drawTerritoryLayers(

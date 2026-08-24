@@ -103,7 +103,7 @@ test("territory starts as undivided land with entry seeds, not a preset street g
   assert.equal(frame.metrics.reservedCells, 0);
   assert.equal(frame.metrics.claimedShare, 0);
   assert.equal(frame.circulation.enabled, true);
-  assert.equal(frame.circulation.kind, "emergent-cell-network");
+  assert.equal(frame.circulation.kind, "emergent-flow-network");
   assert.equal(frame.circulation.cells.length, frame.land.cells.length);
   assert.deepEqual(
     [...publicLandIds(frame)].sort(),
@@ -298,6 +298,54 @@ test("dynamic land and circulation state contribute to the engine checksum", () 
   assert.ok(traveled.frame().circulation.cells.find((cell) => cell.id === entryId).use > 0);
   assert.equal(untraveled.frame().circulation.cells.find((cell) => cell.id === entryId).use, 0);
   assert.notEqual(traveled.frame().checksum, untraveled.frame().checksum);
+});
+
+test("a pressure easement makes claimed land permeable while ownership remains", () => {
+  const environment = {
+    ...scenario.environment,
+    land: {
+      ...scenario.environment.land,
+      policy: {
+        ...scenario.environment.land.policy,
+        reservationTicks: 0,
+      },
+    },
+    circulation: {
+      ...scenario.environment.circulation,
+      pressurePersistence: 1,
+      easementPressureThreshold: 1,
+    },
+  };
+  const engine = createProbeEngine(() => ({ acceleration: { x: 0, y: 0 } }), { environment });
+  const landId = "land-7-12";
+  const cell = engine.land.config.cells.find((candidate) => candidate.id === landId);
+
+  let tenure = engine.land.stage([
+    { agentId: 7, type: "reserve", landId, bid: 1 },
+  ], 0);
+  engine.land.commit(tenure);
+  tenure = engine.land.stage([
+    { agentId: 7, type: "claim", landId },
+  ], 1);
+  engine.land.commit(tenure);
+  const pressure = engine.circulation.stage([{
+    agentId: 0,
+    from: { x: cell.x - 1, y: cell.center.y },
+    to: { x: cell.x - 1, y: cell.center.y },
+    attemptedTo: { x: cell.x + 5, y: cell.center.y },
+  }], 2);
+  engine.circulation.commit(pressure);
+  assert.ok(engine.circulation.easement(landId));
+
+  const walker = engine.agents[0];
+  walker.x = cell.x - walker.radius - 0.1;
+  walker.y = cell.center.y;
+  walker.vx = 80;
+  walker.vy = 0;
+  assert.equal(engine.step().ok, true);
+
+  assert.ok(engine.agents[0].x > cell.x - walker.radius + 1);
+  assert.equal(engine.land.frame(engine.tick).cells[cell.index].ownerId, 7);
 });
 
 test("all agents decide from the same frozen land and circulation-use snapshot", () => {

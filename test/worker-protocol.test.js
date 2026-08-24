@@ -143,7 +143,7 @@ test("territory worker frames clone, grow emergent streets, reset, and replay", 
   assert.ok(initialFrame.land.cells.every((cell) => cell.state === "unclaimed"));
   assert.ok(initialFrame.land.cells.every((cell) => Number.isFinite(cell.access)));
   assert.deepEqual(initialFrame.land.events, []);
-  assert.equal(initialFrame.circulation.kind, "emergent-cell-network");
+  assert.equal(initialFrame.circulation.kind, "emergent-flow-network");
   assert.equal(initialFrame.circulation.cells.length, initialFrame.land.cells.length);
   assert.equal(initialFrame.circulation.entries.length, 2);
   assert.deepEqual(

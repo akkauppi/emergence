@@ -166,6 +166,61 @@ test("an active route may preempt a private reservation but never claimed land",
   assert.equal(route.cellIds.includes("land-1-1"), false);
 });
 
+test("continuous flow edges retain the angle of actual movement", () => {
+  const { circulation } = createStores({
+    circulation: { flowTraceThreshold: 0.1, flowPathThreshold: 1 },
+  });
+  const transition = circulation.stage([{
+    agentId: 3,
+    from: { x: 5, y: 5 },
+    to: { x: 35, y: 25 },
+  }], 0);
+  circulation.commit(transition);
+
+  const flowEdge = circulation.frame().edges.find((edge) => edge.flow);
+  assert.ok(flowEdge);
+  assert.ok(Math.abs(flowEdge.x2 - flowEdge.x1) > 1);
+  assert.ok(Math.abs(flowEdge.y2 - flowEdge.y1) > 1);
+});
+
+test("sustained blocked pressure creates an easement without removing ownership", () => {
+  const { land, circulation } = createStores({
+    columns: 3,
+    rows: 3,
+    circulation: {
+      pressurePersistence: 1,
+      easementPressureThreshold: 3,
+      easementWidth: 8,
+    },
+  });
+  let tenure = land.stage([
+    { agentId: 7, type: "reserve", landId: "land-1-1", bid: 1 },
+  ], 0);
+  land.commit(tenure);
+  tenure = land.stage([
+    { agentId: 7, type: "claim", landId: "land-1-1" },
+  ], 1);
+  land.commit(tenure);
+
+  for (let tick = 2; tick < 5; tick += 1) {
+    const transition = circulation.stage([{
+      agentId: 2,
+      from: { x: 19, y: 30 },
+      to: { x: 19, y: 30 },
+      attemptedTo: { x: 25, y: 30 },
+    }], tick);
+    circulation.commit(transition);
+  }
+
+  const easement = circulation.easement("land-1-1");
+  assert.ok(easement);
+  assert.equal(easement.landId, "land-1-1");
+  assert.ok(Math.abs(easement.y2 - easement.y1) < 0.001);
+  assert.equal(land.frame(5).cells[4].ownerId, 7);
+  assert.equal(circulation.frame().metrics.easementCount, 1);
+  assert.ok(circulation.lastEvents.some((event) => event.type === "pressure-easement"));
+});
+
 test("public reservations mature under use and release after sustained disuse", () => {
   const immediate = createStores({ circulation: { maturityTicks: 0 } });
   let transition = immediate.circulation.stage([
@@ -301,7 +356,7 @@ test("candidate ranking, frame, and checksum replay independently of segment ord
   assert.deepEqual(second.circulation.checksumState(), first.circulation.checksumState());
   assert.deepEqual(second.circulation.frame(), first.circulation.frame());
   const frame = first.circulation.frame();
-  assert.equal(frame.kind, "emergent-cell-network");
+  assert.equal(frame.kind, "emergent-flow-network");
   assert.ok(frame.regions.length >= 3);
   assert.ok(frame.nodes.length >= 3);
   assert.ok(frame.edges.length >= 2);

@@ -9,6 +9,8 @@ const EMPTY_OWNER = -1;
 const SIDE_ORDER = Object.freeze(["north", "east", "south", "west"]);
 const ROLE_NAMES = Object.freeze(["open", "road-reserved", "road"]);
 const transitionStates = new WeakMap();
+const FLOW_MINIMUM_USE = 0.04;
+const MAX_FLOW_FEATURES = 4_096;
 
 const clamp = (value, minimum, maximum) => Math.max(minimum, Math.min(maximum, value));
 const finiteOr = (value, fallback = 0) => Number.isFinite(Number(value)) ? Number(value) : fallback;
@@ -75,6 +77,15 @@ export function normalizeCirculationConfig(input) {
     roadPreference: clamp(finiteOr(input.roadPreference, 0.45), 0, 0.95),
     trailPreference: clamp(finiteOr(input.trailPreference, 0.5), 0, 0.95),
     arrivalRadius: clamp(finiteOr(input.arrivalRadius, 10), 0.5, 500),
+    flowResolution: clamp(finiteOr(input.flowResolution, 18), 6, 80),
+    flowAngleBins: integerIn(input.flowAngleBins, 16, 4, 64),
+    flowPersistence: clamp(finiteOr(input.flowPersistence, 0.965), 0, 1),
+    flowTraceThreshold: clamp(finiteOr(input.flowTraceThreshold, 0.35), 0.01, 1_000_000),
+    flowPathThreshold: clamp(finiteOr(input.flowPathThreshold, reserveThreshold * 1.4), 0.01, 1_000_000),
+    pressurePersistence: clamp(finiteOr(input.pressurePersistence, 0.975), 0, 1),
+    easementPressureThreshold: clamp(finiteOr(input.easementPressureThreshold, 18), 0.1, 1_000_000),
+    easementWidth: clamp(finiteOr(input.easementWidth, 13), 2, 100),
+    pressureContribution: clamp(finiteOr(input.pressureContribution, 0.2), 0.001, 100),
   });
 }
 
@@ -198,6 +209,13 @@ export class PublicCirculation {
     this.loadByCell = new Float64Array(count);
     this.reservedAtByCell = new Int32Array(count).fill(-1);
     this.belowThresholdByCell = new Int32Array(count);
+    this.pressureByCell = new Float64Array(count);
+    this.pressureAxisXByCell = new Float64Array(count);
+    this.pressureAxisYByCell = new Float64Array(count);
+    this.pressurePointXByCell = new Float64Array(count);
+    this.pressurePointYByCell = new Float64Array(count);
+    this.easementByCell = new Uint8Array(count);
+    this.flowSegments = new Map();
     this.counters = { reservations: 0, promotions: 0, releases: 0 };
     this.revision = 0;
     this.lastEvents = freezeArray([]);
@@ -268,6 +286,8 @@ export class PublicCirculation {
       use: this.useByCell[cell.index],
       load: this.loadByCell[cell.index],
       claimed: this.#isClaimed(cell.index),
+      pressure: this.pressureByCell[cell.index],
+      easement: Boolean(this.easementByCell[cell.index]),
     })));
     this.#viewCache = { revision: this.revision, landRevision, cells: observed };
     return observed;
@@ -493,6 +513,98 @@ export class PublicCirculation {
     return result;
   }
 
+  #stageFlow(canonical) {
+    const persistence = this.config.flowPersistence;
+    const next = new Map();
+    for (const [key, segment] of this.flowSegments) {
+      const use = segment.use * persistence;
+      if (use < FLOW_MINIMUM_USE) continue;
+      next.set(key, {
+        ...segment,
+        use,
+        load: 0,
+        axisX: segment.axisX * persistence,
+        axisY: segment.axisY * persistence,
+      });
+    }
+
+    const resolution = this.config.flowResolution;
+    const bins = this.config.flowAngleBins;
+    for (const segment of canonical) {
+      const dx = segment.to.x - segment.from.x;
+      const dy = segment.to.y - segment.from.y;
+      const length = Math.hypot(dx, dy);
+      if (length <= EPSILON) continue;
+      const midpointX = (segment.from.x + segment.to.x) / 2;
+      const midpointY = (segment.from.y + segment.to.y) / 2;
+      let angle = Math.atan2(dy, dx);
+      if (angle < 0) angle += Math.PI;
+      if (angle >= Math.PI) angle -= Math.PI;
+      const angleBin = Math.min(bins - 1, Math.floor(angle / Math.PI * bins));
+      const column = Math.floor(midpointX / resolution);
+      const row = Math.floor(midpointY / resolution);
+      const key = `${column}:${row}:${angleBin}`;
+      const existing = next.get(key);
+      const priorUse = existing?.use ?? 0;
+      const use = priorUse + 1;
+      next.set(key, {
+        key,
+        x: ((existing?.x ?? 0) * priorUse + midpointX) / use,
+        y: ((existing?.y ?? 0) * priorUse + midpointY) / use,
+        axisX: (existing?.axisX ?? 0) + Math.cos(angle * 2),
+        axisY: (existing?.axisY ?? 0) + Math.sin(angle * 2),
+        use,
+        load: (existing?.load ?? 0) + 1,
+      });
+    }
+
+    if (next.size <= MAX_FLOW_FEATURES) return next;
+    return new Map([...next.entries()]
+      .sort((first, second) => second[1].use - first[1].use || compareIds(first[0], second[0]))
+      .slice(0, MAX_FLOW_FEATURES));
+  }
+
+  #easementForIndex(index) {
+    if (index === undefined || !this.easementByCell[index]) return null;
+    const cell = this.cells[index];
+    const axisX = this.pressureAxisXByCell[index];
+    const axisY = this.pressureAxisYByCell[index];
+    const angle = Math.abs(axisX) + Math.abs(axisY) > EPSILON
+      ? Math.atan2(axisY, axisX) / 2
+      : 0;
+    const unitX = Math.cos(angle);
+    const unitY = Math.sin(angle);
+    const pressure = Math.max(EPSILON, this.pressureByCell[index]);
+    const originX = clamp(this.pressurePointXByCell[index] / pressure, cell.x, cell.x + cell.width);
+    const originY = clamp(this.pressurePointYByCell[index] / pressure, cell.y, cell.y + cell.height);
+    const positiveX = unitX > EPSILON ? (cell.x + cell.width - originX) / unitX
+      : unitX < -EPSILON ? (cell.x - originX) / unitX : Infinity;
+    const positiveY = unitY > EPSILON ? (cell.y + cell.height - originY) / unitY
+      : unitY < -EPSILON ? (cell.y - originY) / unitY : Infinity;
+    const negativeX = unitX > EPSILON ? (originX - cell.x) / unitX
+      : unitX < -EPSILON ? (originX - cell.x - cell.width) / unitX : Infinity;
+    const negativeY = unitY > EPSILON ? (originY - cell.y) / unitY
+      : unitY < -EPSILON ? (originY - cell.y - cell.height) / unitY : Infinity;
+    const positiveReach = Math.min(positiveX, positiveY);
+    const negativeReach = Math.min(negativeX, negativeY);
+    return Object.freeze({
+      id: `easement:${cell.id}`,
+      landId: cell.id,
+      x1: originX - unitX * negativeReach,
+      y1: originY - unitY * negativeReach,
+      x2: originX + unitX * positiveReach,
+      y2: originY + unitY * positiveReach,
+      width: this.config.easementWidth,
+      pressure: this.pressureByCell[index],
+      status: "road",
+      hierarchy: "path",
+    });
+  }
+
+  easement(landId) {
+    return this.#easementForIndex(this.#indexById.get(String(landId ?? "")));
+  }
+
   #reachablePublic(roles, excludedIndex = -1) {
     const reached = new Set();
     const pending = this.entries
@@ -552,14 +664,17 @@ export class PublicCirculation {
       const agentId = Number(submitted?.agentId);
       const from = pointOf(submitted?.from);
       const to = pointOf(submitted?.to);
-      if (!Number.isSafeInteger(agentId) || agentId < 0 || !from || !to) {
+      const attemptedTo = pointOf(submitted?.attemptedTo) ?? to;
+      const pressureTo = pointOf(submitted?.pressureTo);
+      if (!Number.isSafeInteger(agentId) || agentId < 0 || !from || !to || !attemptedTo) {
         return Object.freeze({ ok: false, error: "Every circulation segment requires an agentId and finite from/to points.", events: freezeArray([]) });
       }
-      canonical.push({ agentId, from, to });
+      canonical.push({ agentId, from, to, attemptedTo, pressureTo });
     }
     canonical.sort((first, second) => first.agentId - second.agentId
       || first.from.x - second.from.x || first.from.y - second.from.y
       || first.to.x - second.to.x || first.to.y - second.to.y);
+    const flowSegments = this.#stageFlow(canonical);
 
     const loads = new Float64Array(this.cells.length);
     for (const segment of canonical) {
@@ -581,6 +696,66 @@ export class PublicCirculation {
     const belowThreshold = this.belowThresholdByCell.slice();
     const counters = { ...this.counters };
     const events = [];
+    const pressures = new Float64Array(this.pressureByCell.length);
+    const pressureAxisX = new Float64Array(this.pressureAxisXByCell.length);
+    const pressureAxisY = new Float64Array(this.pressureAxisYByCell.length);
+    const pressurePointX = new Float64Array(this.pressurePointXByCell.length);
+    const pressurePointY = new Float64Array(this.pressurePointYByCell.length);
+    const easements = this.easementByCell.slice();
+    for (let index = 0; index < pressures.length; index += 1) {
+      pressures[index] = this.pressureByCell[index] * this.config.pressurePersistence;
+      pressureAxisX[index] = this.pressureAxisXByCell[index] * this.config.pressurePersistence;
+      pressureAxisY[index] = this.pressureAxisYByCell[index] * this.config.pressurePersistence;
+      pressurePointX[index] = this.pressurePointXByCell[index] * this.config.pressurePersistence;
+      pressurePointY[index] = this.pressurePointYByCell[index] * this.config.pressurePersistence;
+    }
+    for (const segment of canonical) {
+      const blockedDistance = Math.hypot(
+        segment.attemptedTo.x - segment.to.x,
+        segment.attemptedTo.y - segment.to.y,
+      );
+      const pressureTarget = segment.pressureTo
+        ?? (blockedDistance > 0.05 ? segment.attemptedTo : null);
+      if (!pressureTarget) continue;
+      const dx = pressureTarget.x - segment.from.x;
+      const dy = pressureTarget.y - segment.from.y;
+      if (Math.hypot(dx, dy) <= EPSILON) continue;
+      const angle = Math.atan2(dy, dx);
+      const blockedIndex = this.#segmentCells(segment.from, pressureTarget)
+        .filter((index) => this.#isClaimed(index) && !easements[index])
+        .sort((first, second) => (
+          Math.hypot(
+            segment.from.x - this.cells[first].center.x,
+            segment.from.y - this.cells[first].center.y,
+          ) - Math.hypot(
+            segment.from.x - this.cells[second].center.x,
+            segment.from.y - this.cells[second].center.y,
+          ) || compareIds(this.cells[first].id, this.cells[second].id)
+        ))[0];
+      if (blockedIndex === undefined) continue;
+      const contribution = segment.pressureTo ? this.config.pressureContribution : 1;
+      pressures[blockedIndex] += contribution;
+      pressureAxisX[blockedIndex] += Math.cos(angle * 2) * contribution;
+      pressureAxisY[blockedIndex] += Math.sin(angle * 2) * contribution;
+      const targetCell = this.cells[blockedIndex];
+      const lengthSquared = dx * dx + dy * dy;
+      const projection = clamp(
+        ((targetCell.center.x - segment.from.x) * dx
+          + (targetCell.center.y - segment.from.y) * dy) / lengthSquared,
+        0,
+        1,
+      );
+      pressurePointX[blockedIndex] += (segment.from.x + dx * projection) * contribution;
+      pressurePointY[blockedIndex] += (segment.from.y + dy * projection) * contribution;
+      if (pressures[blockedIndex] < this.config.easementPressureThreshold) continue;
+      easements[blockedIndex] = 1;
+      events.push(Object.freeze({
+        type: "pressure-easement",
+        tick: nextTick,
+        landId: this.cells[blockedIndex].id,
+        pressure: pressures[blockedIndex],
+      }));
+    }
     const releaseRequests = [];
     const publicCells = this.publicLandIds();
 
@@ -653,6 +828,13 @@ export class PublicCirculation {
       counters,
       events,
       releaseRequests,
+      flowSegments,
+      pressures,
+      pressureAxisX,
+      pressureAxisY,
+      pressurePointX,
+      pressurePointY,
+      easements,
       candidates: new Map(candidates.map((candidate) => [candidate.landId, candidate])),
     });
     return transition;
@@ -711,6 +893,13 @@ export class PublicCirculation {
     this.loadByCell = next.loads;
     this.reservedAtByCell = next.reservedAt;
     this.belowThresholdByCell = next.belowThreshold;
+    this.flowSegments = next.flowSegments;
+    this.pressureByCell = next.pressures;
+    this.pressureAxisXByCell = next.pressureAxisX;
+    this.pressureAxisYByCell = next.pressureAxisY;
+    this.pressurePointXByCell = next.pressurePointX;
+    this.pressurePointYByCell = next.pressurePointY;
+    this.easementByCell = next.easements;
     this.counters = next.counters;
     this.lastEvents = freezeArray(events);
     this.revision += 1;
@@ -758,6 +947,11 @@ export class PublicCirculation {
       }
     }
     const capacity = Math.max(1, this.config.reserveThreshold);
+    const activeFlowEdges = [...this.flowSegments.values()]
+      .filter((segment) => segment.use >= this.config.flowTraceThreshold).length;
+    const establishedFlowEdges = [...this.flowSegments.values()]
+      .filter((segment) => segment.use >= this.config.flowPathThreshold).length;
+    const easementCount = this.easementByCell.reduce((count, active) => count + (active ? 1 : 0), 0);
     return Object.freeze({
       roadCells,
       roadReservedCells,
@@ -776,6 +970,9 @@ export class PublicCirculation {
       occupiedStreetEdges: this.cells.filter((cell) => this.#isPublicIndex(cell.index)
         && this.loadByCell[cell.index] > 0).length,
       streetPopulation: totalPublicLoad,
+      activeFlowEdges,
+      establishedFlowEdges,
+      easementCount,
     });
   }
 
@@ -801,29 +998,49 @@ export class PublicCirculation {
       y: cell.center.y,
       kind: this.entries.some((entry) => entry.landId === cell.id) ? "entry" : "road",
     })));
-    const edges = [];
-    for (const cell of publicCells) {
-      for (const neighborId of cell.neighborIds) {
-        const neighbor = this.#cellById.get(neighborId);
-        if (!neighbor || !this.#isPublicIndex(neighbor.index) || compareIds(cell.id, neighbor.id) >= 0) continue;
-        const load = (this.loadByCell[cell.index] + this.loadByCell[neighbor.index]) / 2;
-        edges.push(Object.freeze({
-          id: `road-edge:${cell.id}:${neighbor.id}`,
-          from: `road-node:${cell.id}`,
-          to: `road-node:${neighbor.id}`,
-          x1: cell.center.x,
-          y1: cell.center.y,
-          x2: neighbor.center.x,
-          y2: neighbor.center.y,
-          length: Math.hypot(neighbor.center.x - cell.center.x, neighbor.center.y - cell.center.y),
-          width: Math.min(cell.width, cell.height),
-          hierarchy: this.roleByCell[cell.index] === ROAD && this.roleByCell[neighbor.index] === ROAD
+    const edges = [...this.flowSegments.values()]
+      .filter((segment) => segment.use >= this.config.flowTraceThreshold)
+      .map((segment) => {
+        const angle = Math.atan2(segment.axisY, segment.axisX) / 2;
+        const unitX = Math.cos(angle);
+        const unitY = Math.sin(angle);
+        const halfLength = this.config.flowResolution * 0.9;
+        const established = segment.use >= this.config.flowPathThreshold;
+        return Object.freeze({
+          id: `flow-edge:${segment.key}`,
+          from: null,
+          to: null,
+          x1: clamp(segment.x - unitX * halfLength, 0, this.worldWidth),
+          y1: clamp(segment.y - unitY * halfLength, 0, this.worldHeight),
+          x2: clamp(segment.x + unitX * halfLength, 0, this.worldWidth),
+          y2: clamp(segment.y + unitY * halfLength, 0, this.worldHeight),
+          length: halfLength * 2,
+          width: established
+            ? clamp(3.5 + Math.log1p(segment.use) * 1.35, 4, 11)
+            : 2.2,
+          hierarchy: established && segment.use >= this.config.flowPathThreshold * 2
             ? "secondary" : "path",
-          load,
-          capacity: Math.max(1, this.config.reserveThreshold),
-          congestion: load / Math.max(1, this.config.reserveThreshold),
-        }));
-      }
+          status: established ? "road" : "trace",
+          load: segment.load,
+          use: segment.use,
+          capacity: Math.max(1, this.config.flowPathThreshold),
+          congestion: segment.load / Math.max(1, this.config.flowPathThreshold),
+          flow: true,
+        });
+      });
+    for (let index = 0; index < this.cells.length; index += 1) {
+      const easement = this.#easementForIndex(index);
+      if (!easement) continue;
+      edges.push(Object.freeze({
+        ...easement,
+        from: null,
+        to: null,
+        load: this.loadByCell[index],
+        use: this.pressureByCell[index],
+        capacity: this.config.easementPressureThreshold,
+        congestion: this.pressureByCell[index] / this.config.easementPressureThreshold,
+        easement: true,
+      }));
     }
     edges.sort((first, second) => compareIds(first.id, second.id));
     const accesses = [];
@@ -848,7 +1065,7 @@ export class PublicCirculation {
     accesses.sort((first, second) => compareIds(first.id, second.id));
     return Object.freeze({
       enabled: true,
-      kind: "emergent-cell-network",
+      kind: "emergent-flow-network",
       sourceLayer: this.config.sourceLayer,
       revision: this.revision,
       cells: dynamicCells,
@@ -870,6 +1087,15 @@ export class PublicCirculation {
       loadByCell: this.loadByCell.slice(),
       reservedAtByCell: this.reservedAtByCell.slice(),
       belowThresholdByCell: this.belowThresholdByCell.slice(),
+      pressureByCell: this.pressureByCell.slice(),
+      pressureAxisXByCell: this.pressureAxisXByCell.slice(),
+      pressureAxisYByCell: this.pressureAxisYByCell.slice(),
+      pressurePointXByCell: this.pressurePointXByCell.slice(),
+      pressurePointYByCell: this.pressurePointYByCell.slice(),
+      easementByCell: this.easementByCell.slice(),
+      flowSegments: freezeArray([...this.flowSegments.values()]
+        .sort((first, second) => compareIds(first.key, second.key))
+        .map((segment) => Object.freeze({ ...segment }))),
       counters: Object.freeze({ ...this.counters }),
       events: this.lastEvents,
     });

@@ -215,6 +215,10 @@ function circulationUse(feature) {
 
 function circulationLabel(frame, cell, features) {
   const feature = circulationFeatureForCell(frame, cell, features);
+  if (feature?.easement === true) {
+    const pressure = Number(feature.pressure);
+    return `public easement${Number.isFinite(pressure) ? ` · pressure ${Math.round(pressure)}` : ""}`;
+  }
   const status = circulationStatus(feature);
   if (!status) {
     const adjacent = Array.isArray(cell?.roadNeighbors)
@@ -404,7 +408,7 @@ function renderTerritoryInspector(frame) {
   const expiry = Number(policy.expiryTicks ?? policy.reservationExpiryTicks);
   ui.territoryPolicy.textContent = `One active plot reservation per person · highest priority wins · seeded tie-breaks${
     Number.isFinite(maturity) ? ` · matures after ${maturity} ticks` : ""
-  }${Number.isFinite(expiry) ? ` · expires after ${expiry} ticks` : ""} · active route cells may be reserved as public way · road and plot intents resolve together.`;
+  }${Number.isFinite(expiry) ? ` · expires after ${expiry} ticks` : ""} · settlement follows busy frontage · sustained blocked demand can open a public easement.`;
 }
 
 function boundedInteger(input, minimum, maximum, fallback) {
@@ -1013,7 +1017,7 @@ function updateCanvasInstruction(mode = "default") {
   } else if (state.perturbed) {
     ui.canvasInstruction.textContent = "Manual perturbation applied · reset to reproduce the seeded run.";
   } else if (territoryAvailable()) {
-    ui.canvasInstruction.textContent = "Click a person or cell to inspect · preferred routes leave traces that can become public ways.";
+    ui.canvasInstruction.textContent = "Click a person or parcel to inspect · continuous traces become paths · pressure can open easements.";
   } else {
     ui.canvasInstruction.textContent = "Click a person to inspect · drag a person to perturb the group.";
   }

@@ -629,6 +629,25 @@ function behave({ self, destination, obstacles, field, params, vec, world, land,
     };
   }
 
+  const mineInput = typeof land.mine === "function" ? land.mine() : land.mine;
+  const mine = (Array.isArray(mineInput) ? mineInput : [])
+    .map(resolveCell)
+    .filter(Boolean);
+  const mineIds = new Set(mine.map(idOf));
+
+  function frontageTraffic(cell) {
+    if (!cell || typeof land.neighbors !== "function") return 0;
+    return Math.max(0, ...(land.neighbors(idOf(cell)) || [])
+      .map(resolveCell)
+      .filter(Boolean)
+      .map((neighbour) => {
+        const publicState = circulationCell(neighbour);
+        return publicState.role === "road" || publicState.role === "road-reserved"
+          ? publicState.use
+          : 0;
+      }));
+  }
+
   // A claimant approaches the public edge of an existing reservation, never
   // its centre. Until the reservation matures it remains part of the same
   // walkable open surface, so a busy route can still be captured and displaced.
@@ -641,7 +660,7 @@ function behave({ self, destination, obstacles, field, params, vec, world, land,
     if (
       reservation.claimable === true &&
       route?.reachable !== false &&
-      route?.fronted === true &&
+      (route?.fronted === true || mine.length > 0) &&
       route?.arrived === true &&
       reservedId
     ) {
@@ -661,11 +680,18 @@ function behave({ self, destination, obstacles, field, params, vec, world, land,
     return movement;
   }
 
-  const mineInput = typeof land.mine === "function" ? land.mine() : land.mine;
-  const mine = (Array.isArray(mineInput) ? mineInput : [])
-    .map(resolveCell)
-    .filter(Boolean);
-  const mineIds = new Set(mine.map(idOf));
+  const settlerShare = Math.max(0, Math.min(1, finite(params.settlerShare, 1)));
+  const settlerRank = (Math.imul(Math.round(self.id), 2654435761) >>> 0) / 4294967296;
+  if (mine.length === 0 && settlerRank >= settlerShare) return movement;
+
+  const minimumParcelCells = Math.max(1, Math.round(finite(params.minimumParcelCells, 3)));
+  const maximumParcelCells = Math.max(
+    minimumParcelCells,
+    Math.round(finite(params.maximumParcelCells, 7))
+  );
+  const targetParcelCells = minimumParcelCells +
+    (self.id % (maximumParcelCells - minimumParcelCells + 1));
+  if (mine.length >= targetParcelCells) return movement;
 
   function isAvailable(cell) {
     if (!cell || cell.buildable === false) return false;
@@ -691,7 +717,7 @@ function behave({ self, destination, obstacles, field, params, vec, world, land,
     for (const owned of mine) {
       for (const neighbour of land.neighbors(idOf(owned)) || []) {
         const cell = resolveCell(neighbour);
-        if (isAvailable(cell) && distanceToBlock(self.position, cell) <= params.siteReach) {
+        if (isAvailable(cell)) {
           candidatesById.set(idOf(cell), cell);
         }
       }
@@ -706,13 +732,14 @@ function behave({ self, destination, obstacles, field, params, vec, world, land,
   }
 
   const minimumSiteUse = Math.max(0, finite(params.minimumSiteUse, 0));
-  const candidates = [...candidatesById.values()]
-    .filter((cell) => circulationCell(cell).use >= minimumSiteUse);
+  const candidates = [...candidatesById.values()].filter((cell) => (
+    mine.length > 0 || frontageTraffic(cell) >= minimumSiteUse
+  ));
   if (candidates.length === 0) return movement;
 
-  const maximumTraffic = Math.max(
+  const maximumFrontageTraffic = Math.max(
     minimumSiteUse,
-    ...candidates.map((cell) => circulationCell(cell).use),
+    ...candidates.map(frontageTraffic),
   );
 
   const maximumCost = Math.max(
@@ -726,9 +753,8 @@ function behave({ self, destination, obstacles, field, params, vec, world, land,
     const amenity = Math.max(0, Math.min(1, attribute(cell, "amenity")));
     const terrain = Math.max(0, Math.min(1, attribute(cell, "terrain")));
     const cost = Math.max(0, attribute(cell, "cost")) / maximumCost;
-    const trafficUse = Math.max(0, circulationCell(cell).use);
-    const movementUse = Math.min(1, trafficUse);
-    const trafficRank = trafficUse / maximumTraffic;
+    const movementUse = Math.max(0, Math.min(1, circulationCell(cell).use));
+    const trafficRank = frontageTraffic(cell) / maximumFrontageTraffic;
     const proximity = Math.max(0, 1 - distanceToBlock(self.position, cell) /
       Math.max(1, params.siteReach));
 
@@ -765,7 +791,8 @@ function behave({ self, destination, obstacles, field, params, vec, world, land,
   if (!best) return movement;
   // Bids communicate relative suitability. Exact ties are resolved centrally
   // using the scenario seed, tick, land ID and agent ID.
-  const bid = Math.max(0.01, Math.round((best.score + 4) * 1_000) / 1_000);
+  const growthBid = mine.length > 0 ? finite(params.growthBidBonus, 2) : 0;
+  const bid = Math.max(0.01, Math.round((best.score + growthBid + 4) * 1_000) / 1_000);
   return { ...movement, reserveLand: { landId: best.id, bid } };
 }`;
 
@@ -1001,14 +1028,14 @@ export const scenarios = [
     kicker: "Movement reserves the public realm",
     stage: { number: "03", label: "Territory laboratory / 03" },
     description:
-      "People make repeated trips while their preferred routes reinforce a fading trace. Frequently crossed cells can mature into public streets; nearby sites can also be reserved for private parcels, so settlement may capture an active route and force later walkers to find another way around.",
+      "People make repeated trips while their continuous trajectories reinforce an off-grid flow network. After movement settles, sites with busy public frontage seed bounded private parcels. Claims resist movement, but sustained blocked demand can open a narrow public easement through them.",
     steps: [
-      "Walk between weighted gates",
-      "Reinforce the preferred route",
-      "Compete for cells as streets or parcels",
+      "Reveal continuous desire lines",
+      "Settle beside busy frontage",
+      "Open pressured paths through claims",
     ],
     question:
-      "Before running: which traces will survive as streets, and where will a private reservation interrupt a busy route? Change route protection, reset with the same seed, and compare how the network adapts.",
+      "Before running: where will movement attract settlement, and which claimed parcels will redirect walkers or yield an easement? Change route protection, reset with the same seed, and compare how the network adapts.",
     relationMode: "none",
     matchLabel: "claimed land held in compact parcels",
     summaryMetrics: [
@@ -1102,6 +1129,15 @@ export const scenarios = [
         roadPreference: 0.45,
         trailPreference: 0.5,
         arrivalRadius: 12,
+        flowResolution: 16,
+        flowAngleBins: 24,
+        flowPersistence: 0.972,
+        flowTraceThreshold: 0.45,
+        flowPathThreshold: 3.5,
+        pressurePersistence: 0.98,
+        pressureContribution: 0.18,
+        easementPressureThreshold: 16,
+        easementWidth: 15,
       },
     },
     params: {
@@ -1110,6 +1146,10 @@ export const scenarios = [
       settlementStartTick: 90,
       minimumSiteUse: 2,
       trafficWeight: 1.8,
+      settlerShare: 0.42,
+      minimumParcelCells: 3,
+      maximumParcelCells: 7,
+      growthBidBonus: 2,
       siteReach: 52,
       accessWeight: 1.4,
       amenityWeight: 0.9,
