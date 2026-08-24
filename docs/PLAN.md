@@ -170,6 +170,10 @@ The first territory–circulation vertical slice is implemented on an immutable 
   agent storage order.
 - Movement records use on traversed cells after every agent has decided. Thus every
   behavior in tick `t` observes the same use field from the end of tick `t − 1`.
+- Settlement has a movement-only warm-up of 90 ticks. After that phase, a cell must
+  have at least 2 units of circulation use before it can receive a private reservation;
+  among eligible sites, higher traffic raises suitability. This keeps early land
+  choices from distorting the route pattern and makes tenure respond to observed use.
 - Only an actively used route cell is eligible for a public-way reservation. A new road
   cell must share a cardinal edge with an entry or the existing road network.
 - Public-way and plot intents share an atomic arbitration phase. A cell cannot be both

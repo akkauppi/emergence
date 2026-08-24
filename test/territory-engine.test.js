@@ -189,7 +189,7 @@ test("territory evolution is invariant to step chunking", () => {
 
 test("every grown parcel and public route stays connected through cardinal topology", () => {
   const engine = createTerritoryEngine();
-  assert.equal(engine.step(60).ok, true);
+  assert.equal(engine.step(120).ok, true);
   const frame = engine.frame();
   const cells = landById(frame);
 

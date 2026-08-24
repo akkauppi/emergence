@@ -162,11 +162,11 @@ test("territory worker frames clone, grow emergent streets, reset, and replay", 
   assert.equal(initialFrame.metrics.roadReservedCells, 0);
 
   const beforeEvolution = messages.length;
-  send({ type: "step", worldRevision: 5, count: 60 });
+  send({ type: "step", worldRevision: 5, count: 180 });
   const evolutionMessages = messages.slice(beforeEvolution);
   assert.equal(evolutionMessages.some((message) => message.type === "runtimeError"), false);
   const evolvedFrame = evolutionMessages.at(-1).frame;
-  assert.equal(evolvedFrame.tick, 60);
+  assert.equal(evolvedFrame.tick, 180);
   assert.ok(evolvedFrame.metrics.activeMovementCells > 0);
   assert.ok(evolvedFrame.circulation.cells.some((cell) => cell.use > 0));
   assert.ok(evolvedFrame.metrics.roadCells + evolvedFrame.metrics.roadReservedCells > 2);
@@ -208,11 +208,11 @@ test("territory worker frames clone, grow emergent streets, reset, and replay", 
   assert.equal(messages.length, beforeStaleControls);
 
   const beforeReplay = messages.length;
-  send({ type: "step", worldRevision: 6, count: 60 });
+  send({ type: "step", worldRevision: 6, count: 180 });
   const replayMessages = messages.slice(beforeReplay);
   assert.equal(replayMessages.some((message) => message.type === "runtimeError"), false);
   const replayFrame = replayMessages.at(-1).frame;
-  assert.equal(replayFrame.tick, 60);
+  assert.equal(replayFrame.tick, 180);
   assert.equal(replayFrame.checksum, evolvedFrame.checksum);
   assert.deepEqual(replayFrame.land, evolvedFrame.land);
   assert.deepEqual(replayFrame.circulation, evolvedFrame.circulation);

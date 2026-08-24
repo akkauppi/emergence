@@ -563,7 +563,7 @@ function preferredWaypoint(self, goal, obstacles, field, params, vec, world) {
   };
 }
 
-function behave({ self, destination, obstacles, field, params, vec, world, land, circulation }) {
+function behave({ self, destination, obstacles, field, params, vec, world, land, circulation, tick = 0 }) {
   const stop = { acceleration: { x: 0, y: 0 } };
   const goalX = Number(destination?.x);
   const goalY = Number(destination?.y);
@@ -586,6 +586,12 @@ function behave({ self, destination, obstacles, field, params, vec, world, land,
   // Land is optional while switching scenarios. Movement remains a complete
   // gate-to-gate rule even if the settlement layer is unavailable.
   if (!land?.enabled || !Array.isArray(land.cells)) return movement;
+
+  // Establish the movement pattern before settlement starts competing for
+  // cells. Early reservations otherwise pull edge-spawned walkers back to
+  // whichever quiet parcel they happen to reach first.
+  const settlementStartTick = Math.max(0, Math.round(finite(params.settlementStartTick, 0)));
+  if (tick < settlementStartTick) return movement;
 
   function resolveCell(value) {
     const id = idOf(value);
@@ -699,8 +705,15 @@ function behave({ self, destination, obstacles, field, params, vec, world, land,
     }
   }
 
-  const candidates = [...candidatesById.values()];
+  const minimumSiteUse = Math.max(0, finite(params.minimumSiteUse, 0));
+  const candidates = [...candidatesById.values()]
+    .filter((cell) => circulationCell(cell).use >= minimumSiteUse);
   if (candidates.length === 0) return movement;
+
+  const maximumTraffic = Math.max(
+    minimumSiteUse,
+    ...candidates.map((cell) => circulationCell(cell).use),
+  );
 
   const maximumCost = Math.max(
     1,
@@ -713,7 +726,9 @@ function behave({ self, destination, obstacles, field, params, vec, world, land,
     const amenity = Math.max(0, Math.min(1, attribute(cell, "amenity")));
     const terrain = Math.max(0, Math.min(1, attribute(cell, "terrain")));
     const cost = Math.max(0, attribute(cell, "cost")) / maximumCost;
-    const movementUse = Math.max(0, Math.min(1, circulationCell(cell).use));
+    const trafficUse = Math.max(0, circulationCell(cell).use);
+    const movementUse = Math.min(1, trafficUse);
+    const trafficRank = trafficUse / maximumTraffic;
     const proximity = Math.max(0, 1 - distanceToBlock(self.position, cell) /
       Math.max(1, params.siteReach));
 
@@ -733,6 +748,7 @@ function behave({ self, destination, obstacles, field, params, vec, world, land,
       amenity * params.amenityWeight -
       (cost * 0.75 + terrain * 0.25) * params.costWeight -
       movementUse * params.throughRoutePenalty +
+      trafficRank * params.trafficWeight +
       compactGrowth * params.growthBias +
       proximity * 0.35;
     const id = idOf(cell);
@@ -1091,6 +1107,9 @@ export const scenarios = [
     params: {
       trailInfluence: 1,
       throughRoutePenalty: 1.1,
+      settlementStartTick: 90,
+      minimumSiteUse: 2,
+      trafficWeight: 1.8,
       siteReach: 52,
       accessWeight: 1.4,
       amenityWeight: 0.9,

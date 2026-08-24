@@ -50,6 +50,7 @@ function runBehavior({
   fieldSample = () => 0,
   mine = [],
   reservation = null,
+  tick = 240,
   neighborIds = {},
   circulationCells = {},
   routes = {},
@@ -74,6 +75,7 @@ function runBehavior({
     params: { ...scenario.params },
     vec: vectorApi(seekTargets),
     world: { width: 1_000, height: 650 },
+    tick,
     land: cells === undefined ? null : {
       enabled: true,
       cells,
@@ -152,7 +154,7 @@ test("territory scenario couples an ordinary land grid to journeys, traces, and 
   });
 });
 
-test("walking follows the Stage 02 preferred-route heuristic while land bidding stays local", () => {
+test("walking follows the Stage 02 preferred-route heuristic while settlement favors traffic", () => {
   const quiet = cell("land-7-2", 100, 300, { access: 0.4, amenity: 0.3 });
   const busy = cell("land-7-1", 60, 300, { access: 0.4, amenity: 0.3 });
   const blocker = { id: "claimed-centre", x: 430, y: 230, width: 140, height: 190 };
@@ -161,12 +163,12 @@ test("walking follows the Stage 02 preferred-route heuristic while land bidding 
     obstacles: [blocker],
     fieldSample: (point) => point.y < blocker.y ? 1 : 0,
     circulationCells: {
-      [busy.id]: { role: "open", use: 1 },
-      [quiet.id]: { role: "open", use: 0 },
+      [busy.id]: { role: "open", use: 8 },
+      [quiet.id]: { role: "open", use: 3 },
     },
   });
 
-  assert.equal(decision.reserveLand.landId, quiet.id, "existing through-movement lowers a private bid");
+  assert.equal(decision.reserveLand.landId, busy.id, "the busier cell should attract settlement");
   assert.ok(Number.isFinite(decision.reserveLand.bid));
   assert.equal(seekTargets.length, 1);
   assert.ok(seekTargets[0].y < blocker.y, "the reinforced upper detour should be preferred");
@@ -177,7 +179,7 @@ test("an actively used open cell remains reservable, but a public cell does not"
   const active = cell("land-7-1", 60, 300, { access: 1, amenity: 1 });
   const contested = runBehavior({
     cells: [active],
-    circulationCells: { [active.id]: { role: "open", use: 1 } },
+    circulationCells: { [active.id]: { role: "open", use: 3 } },
   });
   assert.equal(contested.decision.reserveLand.landId, active.id);
 
@@ -191,6 +193,23 @@ test("an actively used open cell remains reservable, but a public cell does not"
   assert.equal(protectedByFacade.decision.reserveLand, undefined);
 });
 
+test("settlement waits for the movement warm-up before reserving traffic sites", () => {
+  const active = cell("land-7-1", 60, 300, { access: 1, amenity: 1 });
+  const early = runBehavior({
+    cells: [active],
+    tick: 0,
+    circulationCells: { [active.id]: { role: "open", use: 8 } },
+  });
+  assert.equal(early.decision.reserveLand, undefined);
+
+  const settled = runBehavior({
+    cells: [active],
+    tick: 240,
+    circulationCells: { [active.id]: { role: "open", use: 8 } },
+  });
+  assert.equal(settled.decision.reserveLand.landId, active.id);
+});
+
 test("connected parcel growth considers only nearby cardinal neighbours", () => {
   const owned = cell("land-7-1", 60, 300, {}, { ownerId: 7 });
   const adjacent = cell("land-7-2", 100, 300, { access: 0.2 });
@@ -198,6 +217,7 @@ test("connected parcel growth considers only nearby cardinal neighbours", () => 
   const { decision } = runBehavior({
     cells: [owned, adjacent, disconnected],
     mine: [owned.id],
+    circulationCells: { [adjacent.id]: { role: "open", use: 3 } },
     neighborIds: { [owned.id]: [adjacent.id], [adjacent.id]: [owned.id] },
   });
   assert.equal(decision.reserveLand.landId, adjacent.id);
