@@ -135,6 +135,7 @@ test("behavior views are frozen snapshots and staging is non-mutating", () => {
     claimableAt: 1,
     expiresAt: 5,
     claimable: true,
+    occupied: false,
   });
   assert.equal(before.cell("land-0-0").state, "unclaimed");
 });
@@ -233,35 +234,65 @@ test("a strong public route can preempt a reservation, but never a claim", () =>
   assert.equal(claimed.metrics().roadPreemptions, 0);
 });
 
-test("public acquisition removes a claimed parcel edge but never fragments its owner", () => {
+test("public acquisition severs a parcel and retains one deterministic component", () => {
   const state = new LandGridState(config(), { seed: 67 });
   let tick = 0;
   for (const landId of ["land-1-0", "land-1-1", "land-1-2"]) {
     tick = reserveAndClaim(state, 4, landId, tick);
   }
+  commit(state, [reserve(4, "land-0-2")], tick);
+  tick += 1;
 
-  const rejected = commit(state, [], tick, {
+  const severed = commit(state, [], tick, {
     publicAcquisitions: [{ landId: "land-1-1", use: 12 }],
   });
   tick += 1;
-  assert.deepEqual(rejected.acceptedPublicAcquisitionLandIds, []);
-  assert.equal(state.frame(tick).cells[4].ownerId, 4);
-  assert.equal(state.metrics().publicAcquisitions, 0);
-
-  const accepted = commit(state, [], tick, {
-    publicAcquisitions: [{ landId: "land-1-0", use: 15 }],
-  });
-  assert.deepEqual(accepted.acceptedPublicAcquisitionLandIds, ["land-1-0"]);
-  assert.equal(state.frame(tick + 1).cells[3].ownerId, null);
-  assert.deepEqual(state.frame(tick + 1).parcels[0].cellIds, ["land-1-1", "land-1-2"]);
+  assert.deepEqual(severed.acceptedPublicAcquisitionLandIds, ["land-1-1"]);
+  assert.equal(state.frame(tick).cells[3].ownerId, 4);
+  assert.equal(state.frame(tick).cells[4].ownerId, null);
+  assert.equal(state.frame(tick).cells[5].ownerId, null);
+  assert.equal(state.frame(tick).cells[2].reservedBy, null);
+  assert.deepEqual(state.frame(tick).parcels[0].cellIds, ["land-1-0"]);
   assert.equal(state.metrics().publicAcquisitions, 1);
-  assert.deepEqual(accepted.events.find((event) => event.type === "public-acquisition"), {
+  assert.equal(state.metrics().parcelSeverances, 1);
+  assert.equal(state.metrics().severedCellsReleased, 1);
+  assert.equal(state.metrics().severedReservationsReleased, 1);
+  assert.deepEqual(severed.events.find((event) => event.type === "public-acquisition"), {
     type: "public-acquisition",
-    tick: tick + 1,
-    landId: "land-1-0",
+    tick,
+    landId: "land-1-1",
     ownerId: 4,
-    use: 15,
+    use: 12,
   });
+  assert.deepEqual(severed.events.find((event) => event.type === "parcel-severance"), {
+    type: "parcel-severance",
+    tick,
+    ownerId: 4,
+    acquisitionLandId: "land-1-1",
+    retainedLandIds: ["land-1-0"],
+    releasedLandIds: ["land-1-2"],
+    releasedReservationLandIds: ["land-0-2"],
+  });
+});
+
+test("occupied cells reject reservations and defer claims without consuming tenure", () => {
+  const state = new LandGridState(config(), { seed: 71 });
+  let transition = commit(state, [reserve(3, "land-1-1")], 0, {
+    occupiedLandIds: ["land-1-1"],
+  });
+  assert.equal(state.frame(1).cells[4].state, "unclaimed");
+  assert.equal(transition.events[0].reason, "occupied");
+
+  commit(state, [reserve(3, "land-1-1")], 1, { occupiedLandIds: [] });
+  transition = commit(state, [claim(3, "land-1-1")], 2, {
+    occupiedLandIds: ["land-1-1"],
+  });
+  assert.equal(transition.events[0].reason, "occupied");
+  assert.equal(state.frame(3).cells[4].reservedBy, 3);
+
+  commit(state, [claim(3, "land-1-1")], 3, { occupiedLandIds: [] });
+  assert.equal(state.frame(4).cells[4].ownerId, 3);
+  assert.equal(state.metrics().occupancyRejections, 2);
 });
 
 test("established public cells reject private reservations", () => {

@@ -174,6 +174,11 @@ export function normalizeLandConfig(input, worldWidth, worldHeight) {
     reservationTicks,
     expiryTicks,
     requireContiguous: policyInput.requireContiguous !== false,
+    occupancyClearance: clamp(
+      finiteOr(policyInput.occupancyClearance, 0),
+      0,
+      cellSize,
+    ),
     // The first slice intentionally guarantees a single active reservation.
     maxReservationsPerOwner: 1,
   });
@@ -296,11 +301,16 @@ function copyCounters(counters) {
     roadLandConflicts: counters.roadLandConflicts ?? 0,
     roadPreemptions: counters.roadPreemptions ?? 0,
     publicAcquisitions: counters.publicAcquisitions ?? 0,
+    occupancyRejections: counters.occupancyRejections ?? 0,
+    parcelSeverances: counters.parcelSeverances ?? 0,
+    severedCellsReleased: counters.severedCellsReleased ?? 0,
+    severedReservationsReleased: counters.severedReservationsReleased ?? 0,
   };
 }
 
 function rejection(events, counters, tick, ownerId, landId, action, reason) {
   counters.rejected += 1;
+  if (reason === "occupied") counters.occupancyRejections += 1;
   events.push(frozenEvent({ type: "rejection", tick, ownerId, landId, action, reason }));
 }
 
@@ -335,6 +345,10 @@ export class LandGridState {
       roadLandConflicts: 0,
       roadPreemptions: 0,
       publicAcquisitions: 0,
+      occupancyRejections: 0,
+      parcelSeverances: 0,
+      severedCellsReleased: 0,
+      severedReservationsReleased: 0,
     };
     this.lastEvents = freezeArray([]);
     this.revision = 0;
@@ -369,12 +383,23 @@ export class LandGridState {
     return cells;
   }
 
-  viewFor(ownerId, tick = 0) {
+  viewFor(ownerId, tick = 0, { occupiedLandIds = [] } = {}) {
     const id = Number(ownerId);
     if (!Number.isSafeInteger(id) || id < 0) throw new TypeError("A land view requires a non-negative integer owner ID.");
     const currentTick = Math.max(0, Math.round(finiteOr(tick, 0)));
-    if (this.#viewCache?.revision !== this.revision) {
-      const cells = this.#dynamicCells();
+    const occupied = new Set(Array.isArray(occupiedLandIds)
+      ? occupiedLandIds.map((landId) => String(landId))
+      : []);
+    const occupancyKey = [...occupied].sort().join("\u0000");
+    if (this.#viewCache?.revision !== this.revision
+      || this.#viewCache.occupancyKey !== occupancyKey) {
+      const dynamicCells = this.#dynamicCells();
+      const cells = occupied.size > 0
+        ? freezeArray(dynamicCells.map((cell) => Object.freeze({
+          ...cell,
+          occupied: occupied.has(cell.id),
+        })))
+        : dynamicCells;
       const byId = new Map();
       const mineByOwner = new Map();
       const reservationByOwner = new Map();
@@ -403,6 +428,7 @@ export class LandGridState {
       };
       this.#viewCache = {
         revision: this.revision,
+        occupancyKey,
         cells,
         mineByOwner,
         reservationByOwner,
@@ -419,6 +445,7 @@ export class LandGridState {
       claimableAt: reserved.claimableAt,
       expiresAt: reserved.expiresAt,
       claimable: currentTick >= reserved.claimableAt && currentTick < reserved.expiresAt,
+      occupied: reserved.occupied === true,
     }) : null;
     return Object.freeze({
       enabled: this.config.enabled,
@@ -445,24 +472,28 @@ export class LandGridState {
     return cell.neighborIds.some((neighborId) => owners[this.#indexById.get(neighborId)] === ownerId);
   }
 
-  #isContiguousRemoval(ownerId, index, owners = this.ownerByCell) {
-    const remaining = this.config.cells
-      .filter((cell) => cell.index !== index && owners[cell.index] === ownerId)
-      .map((cell) => cell.index);
-    if (remaining.length <= 1) return true;
-    const remainingSet = new Set(remaining);
-    const reached = new Set();
-    const pending = [remaining[0]];
-    while (pending.length > 0) {
-      const current = pending.pop();
-      if (reached.has(current)) continue;
-      reached.add(current);
-      for (const neighborId of this.config.cells[current].neighborIds) {
-        const neighborIndex = this.#indexById.get(neighborId);
-        if (remainingSet.has(neighborIndex) && !reached.has(neighborIndex)) pending.push(neighborIndex);
+  #ownerComponents(ownerId, owners = this.ownerByCell) {
+    const remaining = new Set(this.config.cells
+      .filter((cell) => owners[cell.index] === ownerId)
+      .map((cell) => cell.index));
+    const components = [];
+    while (remaining.size > 0) {
+      const start = remaining.values().next().value;
+      remaining.delete(start);
+      const component = [];
+      const pending = [start];
+      while (pending.length > 0) {
+        const current = pending.pop();
+        component.push(current);
+        for (const neighborId of this.config.cells[current].neighborIds) {
+          const neighborIndex = this.#indexById.get(neighborId);
+          if (remaining.delete(neighborIndex)) pending.push(neighborIndex);
+        }
       }
+      component.sort((first, second) => first - second);
+      components.push(component);
     }
-    return reached.size === remaining.length;
+    return components;
   }
 
   /**
@@ -502,6 +533,13 @@ export class LandGridState {
     }
     const publicCellsInput = Array.isArray(coordination.publicCells) ? coordination.publicCells : [];
     const publicCells = new Set(publicCellsInput.map((landId) => String(landId)));
+    const occupiedLandIdsInput = Array.isArray(coordination.occupiedLandIds)
+      ? coordination.occupiedLandIds
+      : [];
+    if (occupiedLandIdsInput.some((landId) => typeof landId !== "string")) {
+      return Object.freeze({ ok: false, error: "Occupied land IDs must be strings.", events: freezeArray([]) });
+    }
+    const occupiedLandIds = new Set(occupiedLandIdsInput);
     const publicCandidates = new Map();
     for (const submitted of Array.isArray(coordination.publicCandidates)
       ? coordination.publicCandidates
@@ -548,13 +586,33 @@ export class LandGridState {
         const index = this.#indexById.get(landId);
         if (index === undefined || publicCells.has(landId)) continue;
         const ownerId = owners[index];
-        if (ownerId === EMPTY || !this.#isContiguousRemoval(ownerId, index, owners)) continue;
+        if (ownerId === EMPTY) continue;
         owners[index] = EMPTY;
         reservations[index] = EMPTY;
         reservedAt[index] = EMPTY;
         claimableAt[index] = EMPTY;
         expiresAt[index] = EMPTY;
         reservationBids[index] = 0;
+        const components = this.#ownerComponents(ownerId, owners)
+          .sort((first, second) => second.length - first.length
+            || this.config.cells[first[0]].id.localeCompare(this.config.cells[second[0]].id));
+        const retained = new Set(components[0] || []);
+        const releasedIndexes = components.slice(1).flat().sort((first, second) => first - second);
+        for (const releasedIndex of releasedIndexes) owners[releasedIndex] = EMPTY;
+
+        const releasedReservationIndexes = [];
+        if (components.length > 1) {
+          for (let reservationIndex = 0; reservationIndex < reservations.length; reservationIndex += 1) {
+            if (reservations[reservationIndex] !== ownerId
+              || this.#isContiguousAddition(ownerId, reservationIndex, owners)) continue;
+            reservations[reservationIndex] = EMPTY;
+            reservedAt[reservationIndex] = EMPTY;
+            claimableAt[reservationIndex] = EMPTY;
+            expiresAt[reservationIndex] = EMPTY;
+            reservationBids[reservationIndex] = 0;
+            releasedReservationIndexes.push(reservationIndex);
+          }
+        }
         acceptedPublicAcquisitions.add(landId);
         counters.publicAcquisitions += 1;
         events.push(frozenEvent({
@@ -564,13 +622,33 @@ export class LandGridState {
           ownerId,
           use: publicAcquisitions.get(landId).use,
         }));
+        if (releasedIndexes.length > 0) {
+          counters.parcelSeverances += 1;
+          counters.severedCellsReleased += releasedIndexes.length;
+          counters.severedReservationsReleased += releasedReservationIndexes.length;
+          events.push(frozenEvent({
+            type: "parcel-severance",
+            tick: nextTick,
+            ownerId,
+            acquisitionLandId: landId,
+            retainedLandIds: freezeArray([...retained]
+              .map((retainedIndex) => this.config.cells[retainedIndex].id)
+              .sort()),
+            releasedLandIds: freezeArray(releasedIndexes
+              .map((releasedIndex) => this.config.cells[releasedIndex].id)
+              .sort()),
+            releasedReservationLandIds: freezeArray(releasedReservationIndexes
+              .map((releasedIndex) => this.config.cells[releasedIndex].id)
+              .sort()),
+          }));
+        }
       }
 
       // A movement-derived public reservation and private tenure share one
       // arbitration boundary. Ordinary road growth never expropriates claimed
-      // land; only the mature, connectivity-safe acquisition path above can
-      // retire ownership. A private reservation remains contestable until it
-      // becomes a claim.
+      // land; only a mature easement acquisition can retire ownership and,
+      // when necessary, sever the parcel. A private reservation remains
+      // contestable until it becomes a claim.
       for (const landId of [...publicCandidates.keys()].sort()) {
         const candidate = publicCandidates.get(landId);
         const index = this.#indexById.get(landId);
@@ -631,6 +709,7 @@ export class LandGridState {
         else if (reservations[index] !== intent.agentId) reason = "not-reservation-owner";
         else if (currentTick < claimableAt[index]) reason = "not-mature";
         else if (currentTick >= expiresAt[index]) reason = "expired";
+        else if (occupiedLandIds.has(intent.landId)) reason = "occupied";
         else if (!this.#isContiguousAddition(intent.agentId, index)) reason = "not-contiguous";
         if (reason) {
           rejection(events, counters, nextTick, intent.agentId, intent.landId, "claim", reason);
@@ -658,6 +737,7 @@ export class LandGridState {
           || acceptedPublicAcquisitions.has(intent.landId)) reason = "public-way";
         else if (owners[index] !== EMPTY) reason = "already-claimed";
         else if (reservations[index] !== EMPTY) reason = "already-reserved";
+        else if (occupiedLandIds.has(intent.landId)) reason = "occupied";
         else if (this.#hasReservation(intent.agentId, reservations)) reason = "owner-already-reserved";
         else if (!this.#isContiguousAddition(intent.agentId, index)) reason = "not-contiguous";
         if (reason) {
@@ -889,6 +969,10 @@ export class LandGridState {
       roadLandConflicts: this.counters.roadLandConflicts,
       roadPreemptions: this.counters.roadPreemptions,
       publicAcquisitions: this.counters.publicAcquisitions,
+      occupancyRejections: this.counters.occupancyRejections,
+      parcelSeverances: this.counters.parcelSeverances,
+      severedCellsReleased: this.counters.severedCellsReleased,
+      severedReservationsReleased: this.counters.severedReservationsReleased,
     });
   }
 

@@ -79,28 +79,31 @@ claimed cell responsible for the strongest collision correction.
 
 Stall pressure is deliberately narrower than general delay:
 
-1. Each journey keeps its own consecutive stall count; agents do not share frustration.
-2. A tick counts only when the walker intended to move, a claimed cell corrected that
-   move, and actual displacement was at most 30% of intended displacement.
-3. Successful movement or a changed journey resets the count, so waiting, slowing near
-   a destination, and brief contacts do not create crossings.
-4. After a 75-tick grace period, that walker contributes pressure to the cell that
-   physically blocked her. The contribution rises with continued immobility, up to four
-   times its base value. Several blocked walkers still aggregate naturally on one cell.
-5. Crossing the existing pressure threshold opens the same narrow easement used by the
-   detour rule. Ownership remains in place, but movement becomes permeable immediately.
+1. Each journey keeps its own collision-stall count and an 18-unit mobility anchor;
+   agents do not share frustration.
+2. A hard-collision tick counts when a claimed cell corrects an intended move and actual
+   displacement is at most 30% of intended displacement.
+3. The mobility count catches the complementary failure: a walker can repeatedly change
+   direction without a large collision correction yet remain inside the anchor radius.
+   Ordinary movement resets this count by leaving the radius.
+4. After a 75-tick grace period, a hard collision pressures its exact claimed cell. A
+   spatial stall pressures only the first claimed cell on the direct desire line; crowding
+   or slow movement in open space cannot punch land.
+5. The contribution rises with continued immobility, up to four times its base value.
+   Crossing the existing threshold opens the same narrow easement used by detour pressure;
+   ownership remains in place, but movement becomes permeable immediately.
 
-This also separates two rules that look similar in the picture. An easement may pass
-through the middle of a parcel without subdividing its legal ownership. Only later,
-after sustained traffic proposes permanent public acquisition, does the contiguity
-guard apply. If removing that cadastral cell would fragment the owner's remaining
-holding, acquisition is rejected but the already-open easement remains. Parcel
-subdivision can therefore remain a separate tenure experiment rather than a prerequisite
-for resolving a pedestrian deadlock.
+This also separates two rules that look similar in the picture. An easement may first
+pass through the middle of a parcel without changing legal ownership. Later, sustained
+traffic can acquire that crossing permanently even when it cuts the parcel. The largest
+cardinally connected remainder survives (with a stable cell-ID tie-break); other
+components and reservations attached only to them return to open land. This preserves
+one parcel per owner without letting the old no-fragmentation guard veto a public cut.
 
-The circulation frame now reports currently blocked agents, agents beyond the grace
-period, and the maximum per-agent stall age. These values and the per-agent journey
-state participate in deterministic replay checksums.
+The circulation frame now reports currently collision-blocked agents, spatially immobile
+agents beyond the grace period, frustrated agents from either path, and both maximum
+per-agent ages. These values, mobility anchors, and journey state participate in
+deterministic replay checksums.
 
 ## Deterministic reference comparison
 
@@ -149,6 +152,51 @@ global outcome. The changed crossing also changes later settlement and routes, a
 single run completed five fewer trips. The rule should stay a bounded escape mechanism;
 broader throughput claims require a multi-seed, longer-horizon comparison.
 
+### Movement-first tenure follow-up
+
+The next fixed-seed diagnosis found a different failure before pressure was relevant.
+Reservations were traversable, but after only 18 ticks they could harden into claimed
+obstacles around people still inside. In the seed-2026 run, 31 of 124 claims contained
+at least one agent centre at the instant of claiming. Walkers then spent 11,017 aggregate
+agent-ticks inside claimed, non-easement land; the longest uninterrupted enclosure lasted
+1,872 ticks.
+
+The revised tenure rule adds three gates: settlement waits 240 ticks for movement to
+organize, reservations mature for 60 ticks, and cells touched by a walker plus 3 units of
+clearance cannot be reserved or claimed. Sites above 8 units of through-use are also
+protected. Occupancy is visible to every behavior from the same frozen pre-decision
+snapshot and is checked again after movement during atomic arbitration.
+
+At tick 2400, the revised run had zero claims formed around an agent, zero enclosed
+agent-ticks, 250 completed trips, 8 walkers below 1 world unit per second, 110 claimed
+cells, 36 support-road cells, 7 easements, and 5 acquired rights-of-way. The prior run had
+171 trips, 12 slow walkers, 116 claimed cells, 23 support-road cells, 16 easements, and 8
+acquired rights-of-way. The first reservation moved from tick 91 to 241 and the first
+claim from 110 to 302. One acquired easement severed a parcel under the new rule.
+
+These figures are a deterministic regression probe, not calibration. They do show that
+settlement remains substantial while the specific enclosure defect disappears; the
+lower easement count is consistent with land creating fewer conflicts in the first
+place.
+
+### Spatial-immobility follow-up
+
+A second late-run diagnosis tested the movement-first version at ticks 1000, 1500, and
+2000. Two independent seed-2026 engines and a reset replay had identical state at tick
+2000 (`cdc83f72` before this follow-up), so the reported variation was not simulation
+randomness. The genuine defect was narrower: 6, 10, and 6 walkers respectively travelled
+less than 25 world units over the preceding 200 ticks without completing a trip. Several
+oscillated inside a one-unit-wide range beside a parcel, but their collision-stall count
+kept resetting to zero.
+
+With the mobility-anchor rule, the same three stuck counts were 0, 0, and 0. At tick 2400
+the run had 367 completed trips, 130 claimed cells, 39 support-road cells, 34 easements,
+and 25 acquired rights-of-way. Of the 34 crossing events, 19 came from immobility alone,
+8 combined detour and immobility, and 7 came from detour alone. This is a successful
+deadlock regression but also a substantial increase in crossings; the count and visual
+permeability should be treated as calibration signals rather than assumed improvements.
+An independent candidate replay matched the tick-2000 checksum `581faf8a` exactly.
+
 ## Acceptance and falsification
 
 The bounded-view slice is useful if, across several fixed seeds:
@@ -158,6 +206,8 @@ The bounded-view slice is useful if, across several fixed seeds:
 - easements arise at repeated local conflicts rather than immediately reproducing the
   direct origin–destination line;
 - sustained collision stalls eventually resolve while brief contacts create no pressure;
+- no reservation or claim forms under an occupying walker, including a same-tick arrival;
+- a mature public cut leaves at most one connected private component for its owner;
 - replay, tick chunking, and agent storage order remain deterministic; and
 - runtime remains comparable to the complete-route baseline.
 

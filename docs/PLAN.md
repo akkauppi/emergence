@@ -155,10 +155,16 @@ its internal tenure index, while movement and visible paths use continuous geome
   submit at most one reservation or claim intent. Malformed intent structure aborts the
   tick before movement or tenure changes; a well-formed but ineligible action is a
   recorded domain rejection.
+- The frozen land snapshot also marks cells touched by any walker's radius plus a small
+  clearance. Behaviors avoid reserving or claiming those cells. Arbitration repeats the
+  occupancy check against post-movement positions, closing the race where a walker enters
+  a proposed site during the same tick.
 - Reservation bids are grouped and resolved centrally. Higher priority wins; exact ties
   use a deterministic hash of seed, tick, land ID, and agent ID instead of storage order.
 - A winning reservation is stamped with explicit maturity and expiry ticks. Only its
-  owner may claim it while mature and active.
+  owner may claim it while mature, active, and unoccupied. Territory uses a 60-tick
+  maturation window; a busy reservation remains traversable and can still be preempted
+  by public movement or expire.
 - An owner's first claim must be beside sufficiently used public frontage. A stable
   subset of agents may settle, and each receives a deterministic target area of three
   to seven cells. Later claims share an edge with existing holdings, but do not need
@@ -178,11 +184,11 @@ its internal tenure index, while movement and visible paths use continuous geome
   either tenure or circulation wins it.
 - Movement records use on traversed cells after every agent has decided. Thus every
   behavior in tick `t` observes the same use field from the end of tick `t − 1`.
-- Settlement has a movement-only warm-up of 90 ticks. After that phase, an initial site
+- Settlement has a movement-only warm-up of 240 ticks. After that phase, an initial site
   needs at least 2 units of use on adjacent public frontage; higher frontage traffic
-  raises suitability while traffic through the private site lowers it. This keeps early
-  land choices from distorting routes and places parcels beside movement rather than on
-  top of it.
+  raises suitability while traffic through the private site lowers it. Cells above 8
+  units of through-use are ineligible for private tenure. This keeps early land choices
+  from distorting routes and places parcels beside movement rather than on top of it.
 - A route cell must remain above the public-use threshold across repeated active ticks
   before it is eligible for a public-way reservation. A new road cell must share a
   cardinal edge with an entry or the existing legal support network.
@@ -206,18 +212,19 @@ its internal tenure index, while movement and visible paths use continuous geome
   position and angle. Once the pressure threshold is crossed, the site receives a narrow
   easement and becomes permeable without immediately removing ownership.
 - A second, per-agent pressure path covers genuine immobility that the detour measure
-  cannot see. Collision resolution identifies the claimed cell that prevented an intended
-  move. If one walker achieves at most 30% of that intended displacement for 75 consecutive
-  ticks, she begins adding pressure to that exact cell; her contribution ramps while the
-  stall continues and resets when movement resumes. Brief collisions, idle agents, and
-  ordinary slow progress therefore do not create easements.
+  cannot see. It retains both consecutive hard-collision corrections and an 18-unit
+  mobility anchor. Leaving the anchor radius resets the spatial count; remaining inside
+  it for 75 ticks starts pressure only when claimed land crosses the direct desire line.
+  Hard collisions target their exact cell. Brief contacts, slow progress through open
+  space, and crowding without an intervening parcel therefore do not create easements.
 - Easement traffic has its own fading use memory. Sustained use can propose public
   acquisition of the crossed cell. Land and circulation resolve that proposal atomically:
-  ownership is retired only when removing the cell leaves the owner's remaining parcel
-  connected. A rejected acquisition leaves the already-permeable private easement intact.
-  The permanent crossing remains an off-grid line and becomes a public anchor from which
-  local support streets may grow; it does not render the full cadastral cell as an
-  orthogonal street block.
+  ownership of the crossing is retired even when this cuts the parcel. The largest
+  cardinally connected remainder survives, with a stable cell-ID tie-break; other
+  components and any reservation stranded beside them return to open land. The permanent
+  crossing remains an off-grid line and becomes a public anchor from which local support
+  streets may grow; it does not render the full cadastral cell as an orthogonal street
+  block.
 - The canvas distinguishes continuous traces, established paths, easements, plot
   reservations, contested cells, and claims. The unclaimed cadastral checkerboard is
   hidden in this mode so the movement geometry, rather than the storage topology,
@@ -228,23 +235,25 @@ Initial land sequence:
 1. Choose locally within a bounded forward view and accumulate continuous,
    angle-preserving movement traces.
 2. Promote only repeatedly reinforced traces, and retire streets after sustained low use.
-3. After the warm-up, seed private parcels beside the busiest eligible frontage.
+3. After the warm-up, seed private parcels only on clear, low-through-use sites beside
+   the busiest eligible frontage.
 4. Grow each parcel contiguously toward a bounded target area, balancing compactness and suitability.
-5. Accumulate pressure when claimed land imposes a substantial journey detour or a
-   sustained collision stall.
-6. Open a narrow easement, then acquire it as public right-of-way only after sustained use.
+5. Accumulate pressure when claimed land imposes a substantial journey detour, a
+   sustained hard collision, or prolonged movement inside a small spatial radius.
+6. Open a narrow easement, then acquire it after sustained use; if it cuts a parcel,
+   retain one connected side and release the rest.
 7. Resolve road, plot, easement, and acquisition events deterministically and expose them for inspection.
 
 This sequence retains deterministic cell-based tenure without forcing paths to inherit
 its orthogonal shape. Remaining depth includes affordability and budget locking,
-release and subdivision, non-grid parcel geometry, easement compensation, capacity and
-maintenance, and coupling claims to occupation or demand. A plot claim still does not
-create a building.
+voluntary release and subdivision, non-grid parcel geometry, easement compensation,
+capacity and maintenance, and coupling claims to occupation or demand. A plot claim
+still does not create a building.
 
 Measurements: parcel area, frontage, compactness, ownership concentration, travel use,
 journey detour distance and ratio, trace and street counts, promotions and degenerations,
 easements and acquired rights-of-way, road cells and growth, network components,
-reservations, and road/plot conflicts.
+reservations, occupancy rejections, parcel severances, and road/plot conflicts.
 
 #### Modeling rationale and organic-growth directions
 
@@ -328,7 +337,7 @@ Conflicting actions are grouped by target and resolved centrally. A reservation 
 - Land grid prototype with reservation/claim arbitration (implemented foundation)
 - Attributed access, terrain, cost and frontage plus contiguous parcel growth and parcel metrics (implemented foundation)
 - Add agent budgets, bid locks/refunds, and hard affordability/frontage policies
-- Add release, subdivision, and non-grid parcel geometry
+- Add voluntary release, general subdivision, and non-grid parcel geometry
 - Scenario versioning and instructor-authored locked parameters
 
 ### 0.4 — Streets and settlement
@@ -361,7 +370,9 @@ Headless engine tests should establish that:
 - malformed behavior is isolated and reported;
 - desire-path agents remain finite, bounded, and outside obstacles while completing horizontal, vertical, and diagonal journeys through central, regular-grid, staggered-grid, and weighted multi-gate layouts;
 - every territory behavior in a tick observes the same tenure snapshot, contested cells resolve independently of agent storage order, and an invalid intent leaves the whole tick unchanged;
-- reservations mature and expire at exact documented ticks, no cell is double-owned, every owner's claimed cells remain cardinally connected, and reservation conflicts and expiries replay exactly;
+- reservations mature and expire at exact documented ticks, occupied cells cannot become
+  reservations or claims, no cell is double-owned, every owner's surviving claimed cells
+  remain cardinally connected, and reservation conflicts and expiries replay exactly;
 - parcel-access routes break equal-cost ties deterministically, while ordinary movement
   produces replayable continuous flow segments with multiple orientations;
 - every behavior sees the same prior-tick use snapshot, and only a repeatedly traversed
@@ -374,8 +385,9 @@ Headless engine tests should establish that:
   acquired right-of-way anchor; claimed sites remain blocked until a journey exceeds
   deterministic detour thresholds, after which an easement preserves the owner while
   recording use through the site;
-- sustained easement use can retire ownership only when the remaining parcel stays
-  connected, and accepted acquisitions replay as permanent off-grid public anchors;
+- sustained easement use can retire ownership and sever a parcel deterministically;
+  one connected component survives, released sides return to open land, and accepted
+  acquisitions replay as permanent off-grid public anchors;
 - for the same scenario, seed, behavior, parameters, population, and scheduled
   interventions, agents, tenure, route use, road growth, conflicts, and checksum replay
   exactly; tick chunking and agent storage order do not change the result.

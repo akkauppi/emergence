@@ -166,11 +166,11 @@ test("territory worker frames clone, mature and retire streets, reset, and repla
   assert.equal(initialFrame.metrics.roadReservedCells, 0);
 
   const beforeEvolution = messages.length;
-  send({ type: "step", worldRevision: 5, count: 360 });
+  send({ type: "step", worldRevision: 5, count: 480 });
   const evolutionMessages = messages.slice(beforeEvolution);
   assert.equal(evolutionMessages.some((message) => message.type === "runtimeError"), false);
   const evolvedFrame = evolutionMessages.at(-1).frame;
-  assert.equal(evolvedFrame.tick, 360);
+  assert.equal(evolvedFrame.tick, 480);
   assert.ok(evolvedFrame.metrics.activeMovementCells > 0);
   assert.ok(evolvedFrame.circulation.cells.some((cell) => cell.use > 0));
   assert.ok(evolvedFrame.metrics.roadCells + evolvedFrame.metrics.roadReservedCells > 2);
@@ -214,11 +214,11 @@ test("territory worker frames clone, mature and retire streets, reset, and repla
   assert.equal(messages.length, beforeStaleControls);
 
   const beforeReplay = messages.length;
-  send({ type: "step", worldRevision: 6, count: 360 });
+  send({ type: "step", worldRevision: 6, count: 480 });
   const replayMessages = messages.slice(beforeReplay);
   assert.equal(replayMessages.some((message) => message.type === "runtimeError"), false);
   const replayFrame = replayMessages.at(-1).frame;
-  assert.equal(replayFrame.tick, 360);
+  assert.equal(replayFrame.tick, 480);
   assert.equal(replayFrame.checksum, evolvedFrame.checksum);
   assert.deepEqual(replayFrame.land, evolvedFrame.land);
   assert.deepEqual(replayFrame.circulation, evolvedFrame.circulation);
@@ -232,7 +232,7 @@ test("continuous playback skips replay checksum work in live frames", () => {
   const playbackMessages = messages.slice(beforePlay);
 
   assert.deepEqual(playbackMessages.map((message) => message.type), ["status", "frame"]);
-  assert.equal(playbackMessages[1].frame.tick, 361);
+  assert.equal(playbackMessages[1].frame.tick, 481);
   assert.equal(playbackMessages[1].frame.checksum, null);
 
   send({ type: "pause", worldRevision: 6 });

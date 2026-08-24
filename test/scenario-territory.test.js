@@ -127,6 +127,8 @@ test("territory scenario couples an ordinary land grid to journeys, traces, and 
     { origin: { x: 20, y: 10 }, columns: 24, rows: 15, cellSize: 40, gap: 0 },
   );
   assert.equal(land.rightOfWay, undefined, "the preset must not author a street grid");
+  assert.equal(land.policy.reservationTicks, 60);
+  assert.equal(land.policy.occupancyClearance, 3);
   assert.ok(land.origin.x + land.columns * land.cellSize <= 1_000);
   assert.ok(land.origin.y + land.rows * land.cellSize <= 650);
   assert.deepEqual(land.attributes.frontage.edges, ["north", "east", "south", "west"]);
@@ -166,6 +168,7 @@ test("territory scenario couples an ordinary land grid to journeys, traces, and 
     pressureDetourDistance: 60,
     pressureContribution: 0.24,
     pressureStallTicks: 75,
+    pressureStallDistance: 18,
     pressureStallMovementRatio: 0.3,
     pressureStallContribution: 0.14,
     easementPressureThreshold: 14,
@@ -183,6 +186,8 @@ test("territory scenario couples an ordinary land grid to journeys, traces, and 
     { viewAngle: 110, viewDepth: 70, routeMomentum: 0.55 },
   );
   assert.ok(scenario.controls.some(({ key }) => key === "viewAngle"));
+  assert.equal(scenario.params.settlementStartTick, 240);
+  assert.equal(scenario.params.maximumSiteUse, 8);
 });
 
 test("walking follows desire lines while settlement favors busy public frontage", () => {
@@ -272,6 +277,21 @@ test("a site beside active frontage remains reservable, but a public cell does n
   assert.equal(protectedByFacade.decision.reserveLand, undefined);
 });
 
+test("well-beaten through-cells remain unavailable for private settlement", () => {
+  const active = cell("land-7-1", 60, 300, { access: 1, amenity: 1 });
+  const frontage = cell("land-8-1", 60, 340);
+  const protectedPath = runBehavior({
+    cells: [active, frontage],
+    tick: 240,
+    neighborIds: { [active.id]: [frontage.id] },
+    circulationCells: {
+      [active.id]: { role: "open", use: 9 },
+      [frontage.id]: { role: "road", use: 9 },
+    },
+  });
+  assert.equal(protectedPath.decision.reserveLand, undefined);
+});
+
 test("settlement waits for the movement warm-up before reserving frontage sites", () => {
   const active = cell("land-7-1", 60, 300, { access: 1, amenity: 1 });
   const frontage = cell("land-8-1", 60, 340);
@@ -350,6 +370,20 @@ test("a reservation approaches public frontage and claims only when mature and a
   });
   assert.deepEqual(claiming.decision.claimLand, { landId: reserved.id });
   assert.equal(claiming.decision.reserveLand, undefined);
+
+  const occupied = runBehavior({
+    cells: [reserved],
+    reservation: { landId: reserved.id, claimable: true, occupied: true },
+    routes: {
+      [reserved.id]: {
+        reachable: true,
+        fronted: true,
+        arrived: true,
+        waypoint: frontageWaypoint,
+      },
+    },
+  });
+  assert.equal(occupied.decision.claimLand, undefined);
 });
 
 test("the rule keeps walking when territory observations are unavailable", () => {

@@ -133,10 +133,10 @@ test("territory starts as undivided land with entry seeds, not a preset street g
 test("movement use grows a connected street network without taking claimed land", () => {
   const engine = createTerritoryEngine();
   const initialRoads = engine.frame().metrics.roadCells;
-  assert.equal(engine.step(120).ok, true);
+  assert.equal(engine.step(360).ok, true);
 
   const frame = engine.frame();
-  assert.equal(frame.tick, 120);
+  assert.equal(frame.tick, 360);
   assert.ok(frame.metrics.activeMovementCells > 0);
   assert.ok(frame.circulation.cells.some((cell) => cell.use > 0));
   assert.ok(frame.metrics.roadCells + frame.metrics.roadReservedCells > initialRoads);
@@ -148,13 +148,14 @@ test("movement use grows a connected street network without taking claimed land"
   assertConnectedPublicNetwork(frame);
 });
 
-test("same-seed reset replays exact agents, tenure, events, and checksum", () => {
-  const engine = createTerritoryEngine({ seed: 613 });
-  assert.equal(engine.step(40).ok, true);
+test("same-seed reset replays exact post-settlement agents, tenure, events, and checksum", () => {
+  const engine = createTerritoryEngine({ seed: 2026 });
+  assert.equal(engine.step(360).ok, true);
   const expected = engine.frame();
+  assert.ok(expected.metrics.landClaims > 0, "the replay horizon must include tenure changes");
 
   engine.reset();
-  assert.equal(engine.step(40).ok, true);
+  assert.equal(engine.step(360).ok, true);
   const replay = engine.frame();
 
   assert.deepEqual(replay.agents, expected.agents);
@@ -192,7 +193,7 @@ test("territory evolution is invariant to step chunking", () => {
 
 test("every grown parcel and public route stays connected through cardinal topology", () => {
   const engine = createTerritoryEngine();
-  assert.equal(engine.step(120).ok, true);
+  assert.equal(engine.step(360).ok, true);
   const frame = engine.frame();
   const cells = landById(frame);
 
@@ -406,6 +407,55 @@ test("engine collisions let a persistently stalled walker open a claimed cell", 
   const blockedX = engine.agents[0].x;
   assert.equal(engine.step().ok, true);
   assert.ok(engine.agents[0].x > blockedX, "the new easement must make the claimed cell permeable");
+});
+
+test("a reservation cannot harden into a plot around an occupying walker", () => {
+  const environment = {
+    ...scenario.environment,
+    land: {
+      ...scenario.environment.land,
+      policy: {
+        ...scenario.environment.land.policy,
+        reservationTicks: 0,
+        occupancyClearance: 3,
+      },
+    },
+  };
+  const landId = "land-7-12";
+  const observedOccupancy = [];
+  const engine = createProbeEngine(({ self, land }) => {
+    if (self.id === 0) observedOccupancy.push(land.cell(landId).occupied === true);
+    return self.id === 0
+      ? { acceleration: { x: 0, y: 0 }, claimLand: { landId } }
+      : { acceleration: { x: 0, y: 0 } };
+  }, { environment, population: 2 });
+  const cell = engine.land.config.cells.find((candidate) => candidate.id === landId);
+  const tenure = engine.land.stage([{ agentId: 0, type: "reserve", landId, bid: 1 }], 0);
+  engine.land.commit(tenure);
+  engine.agents[0].x = 100;
+  engine.agents[0].y = 100;
+  engine.agents[0].vx = 0;
+  engine.agents[0].vy = 0;
+  engine.agents[1].x = cell.center.x;
+  engine.agents[1].y = cell.center.y;
+  engine.agents[1].vx = 0;
+  engine.agents[1].vy = 0;
+
+  // First tick reaches the explicit maturity boundary; the second is deferred
+  // by occupancy while preserving the reservation.
+  assert.equal(engine.step(2).ok, true);
+  assert.equal(engine.land.frame(engine.tick).cells[cell.index].reservedBy, 0);
+  assert.equal(engine.land.frame(engine.tick).cells[cell.index].ownerId, null);
+  assert.ok(engine.land.lastEvents.some(
+    (event) => event.action === "claim" && event.reason === "occupied",
+  ));
+  assert.deepEqual(observedOccupancy, [true, true]);
+
+  engine.agents[1].x = cell.x + cell.width + engine.agents[1].radius + 5;
+  engine.agents[1].vx = 0;
+  assert.equal(engine.step().ok, true);
+  assert.equal(engine.land.frame(engine.tick).cells[cell.index].ownerId, 0);
+  assert.equal(observedOccupancy.at(-1), false);
 });
 
 test("all agents decide from the same frozen land and circulation-use snapshot", () => {

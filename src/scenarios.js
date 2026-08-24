@@ -667,7 +667,8 @@ function behave({ self, destination, obstacles, field, params, vec, world, land,
 
   // A claimant approaches the public edge of an existing reservation, never
   // its centre. Until the reservation matures it remains part of the same
-  // walkable open surface, so a busy route can still be captured and displaced.
+  // walkable open surface. A claim waits while anyone occupies the site, and
+  // an active public route can still preempt the reservation.
   const reservation = land.reservation || null;
   if (reservation) {
     const reservedId = idOf(reservation);
@@ -676,6 +677,7 @@ function behave({ self, destination, obstacles, field, params, vec, world, land,
       : null;
     if (
       reservation.claimable === true &&
+      reservation.occupied !== true &&
       route?.reachable !== false &&
       (route?.fronted === true || mine.length > 0) &&
       route?.arrived === true &&
@@ -712,6 +714,7 @@ function behave({ self, destination, obstacles, field, params, vec, world, land,
 
   function isAvailable(cell) {
     if (!cell || cell.buildable === false) return false;
+    if (cell.occupied === true) return false;
     const owner = cell.ownerId ?? cell.owner ?? cell.claimedBy ??
       cell.tenure?.ownerId ?? cell.tenure?.owner;
     const reservedBy = cell.reservedBy ?? cell.reservation?.ownerId ??
@@ -749,8 +752,13 @@ function behave({ self, destination, obstacles, field, params, vec, world, land,
   }
 
   const minimumSiteUse = Math.max(0, finite(params.minimumSiteUse, 0));
+  const maximumSiteUse = Math.max(
+    minimumSiteUse,
+    finite(params.maximumSiteUse, Number.POSITIVE_INFINITY)
+  );
   const candidates = [...candidatesById.values()].filter((cell) => (
-    mine.length > 0 || frontageTraffic(cell) >= minimumSiteUse
+    (mine.length > 0 || frontageTraffic(cell) >= minimumSiteUse) &&
+    circulationCell(cell).use <= maximumSiteUse
   ));
   if (candidates.length === 0) return movement;
 
@@ -770,7 +778,10 @@ function behave({ self, destination, obstacles, field, params, vec, world, land,
     const amenity = Math.max(0, Math.min(1, attribute(cell, "amenity")));
     const terrain = Math.max(0, Math.min(1, attribute(cell, "terrain")));
     const cost = Math.max(0, attribute(cell, "cost")) / maximumCost;
-    const movementUse = Math.max(0, Math.min(1, circulationCell(cell).use));
+    const movementUse = Math.min(
+      4,
+      Math.max(0, circulationCell(cell).use) / Math.max(1, minimumSiteUse)
+    );
     const trafficRank = frontageTraffic(cell) / maximumFrontageTraffic;
     const proximity = Math.max(0, 1 - distanceToBlock(self.position, cell) /
       Math.max(1, params.siteReach));
@@ -1045,7 +1056,7 @@ export const scenarios = [
     kicker: "Movement reserves the public realm",
     stage: { number: "03", label: "Territory laboratory / 03" },
     description:
-      "People keep a rough destination bearing but choose each step from a bounded forward view, adapting to nearby traces and obstacles. Their continuous trajectories reinforce a fading off-grid flow network: only repeatedly used traces mature into streets, quiet streets degenerate, surviving frontage attracts parcels, and costly detours or prolonged blockage can create public crossings.",
+      "People keep a rough destination bearing but choose each step from a bounded forward view, adapting to nearby traces and obstacles. Their continuous trajectories reinforce a fading off-grid flow network: only repeatedly used traces mature into streets, clear low-traffic sites beside surviving frontage become parcels, and costly detours or prolonged blockage can create crossings that eventually sever private land.",
     steps: [
       "Adapt locally within a forward view",
       "Promote only well-beaten paths",
@@ -1109,9 +1120,10 @@ export const scenarios = [
           frontage: { edges: ["north", "east", "south", "west"] },
         },
         policy: {
-          reservationTicks: 18,
+          reservationTicks: 60,
           expiryTicks: 900,
           requireContiguous: true,
+          occupancyClearance: 3,
           maxReservationsPerOwner: 1,
         },
       },
@@ -1160,6 +1172,7 @@ export const scenarios = [
         pressureDetourDistance: 60,
         pressureContribution: 0.24,
         pressureStallTicks: 75,
+        pressureStallDistance: 18,
         pressureStallMovementRatio: 0.3,
         pressureStallContribution: 0.14,
         easementPressureThreshold: 14,
@@ -1175,8 +1188,9 @@ export const scenarios = [
       viewDepth: 70,
       routeMomentum: 0.55,
       throughRoutePenalty: 1.1,
-      settlementStartTick: 90,
+      settlementStartTick: 240,
       minimumSiteUse: 2,
+      maximumSiteUse: 8,
       trafficWeight: 1.8,
       settlerShare: 0.42,
       minimumParcelCells: 3,

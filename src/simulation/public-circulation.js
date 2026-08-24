@@ -69,6 +69,7 @@ export function normalizeCirculationConfig(input) {
     0.01,
     1_000_000,
   );
+  const flowResolution = clamp(finiteOr(input.flowResolution, 18), 6, 80);
   const pressureContribution = clamp(finiteOr(input.pressureContribution, 0.2), 0.001, 100);
   return Object.freeze({
     enabled: true,
@@ -84,7 +85,7 @@ export function normalizeCirculationConfig(input) {
     roadPreference: clamp(finiteOr(input.roadPreference, 0.45), 0, 0.95),
     trailPreference: clamp(finiteOr(input.trailPreference, 0.5), 0, 0.95),
     arrivalRadius: clamp(finiteOr(input.arrivalRadius, 10), 0.5, 500),
-    flowResolution: clamp(finiteOr(input.flowResolution, 18), 6, 80),
+    flowResolution,
     flowAngleBins: integerIn(input.flowAngleBins, 16, 4, 64),
     flowPersistence: clamp(finiteOr(input.flowPersistence, 0.965), 0, 1),
     flowTraceThreshold: clamp(finiteOr(input.flowTraceThreshold, 0.35), 0.01, 1_000_000),
@@ -100,6 +101,11 @@ export function normalizeCirculationConfig(input) {
     pressureDetourRatio: clamp(finiteOr(input.pressureDetourRatio, 1.15), 1, 10),
     pressureDetourDistance: clamp(finiteOr(input.pressureDetourDistance, 40), 0, 10_000),
     pressureStallTicks: integerIn(input.pressureStallTicks, 75, 1, 1_000_000),
+    pressureStallDistance: clamp(
+      finiteOr(input.pressureStallDistance, Math.max(12, flowResolution)),
+      1,
+      1_000,
+    ),
     pressureStallMovementRatio: clamp(finiteOr(input.pressureStallMovementRatio, 0.3), 0, 1),
     easementPressureThreshold: clamp(finiteOr(input.easementPressureThreshold, 18), 0.1, 1_000_000),
     easementWidth: clamp(finiteOr(input.easementWidth, 13), 2, 100),
@@ -816,6 +822,7 @@ export class PublicCirculation {
         segment.detourRatio = 1;
         segment.stepExtraDistance = 0;
         segment.stalledTicks = 0;
+        segment.immobileTicks = 0;
         continue;
       }
       const remainingBefore = Math.hypot(
@@ -852,8 +859,11 @@ export class PublicCirculation {
       segment.detourRatio = Math.max(1, projectedDistance / directDistance);
       segment.stepExtraDistance = Math.max(0, movement - (remainingBefore - remainingAfter));
       // Detour pressure cannot observe a walker pinned in place because that
-      // journey adds no travel distance. Count only collision-specific failed
-      // movement, per agent, so waiting and ordinary slow motion remain inert.
+      // journey adds no travel distance. Preserve the collision-specific
+      // counter, and also retain a small spatial anchor per journey. Normal
+      // walkers repeatedly leave that radius and reset it; a walker oscillating
+      // beside a parcel accumulates immobility even when no single correction
+      // is large enough to count as a hard collision.
       const blockedIntent = segment.blockedLandId !== null
         && attemptedMovement > 0.05
         && collisionCorrection > 0.05
@@ -861,6 +871,22 @@ export class PublicCirculation {
       segment.stalledTicks = blockedIntent
         ? (continuous ? Math.max(0, prior.stalledTicks ?? 0) : 0) + 1
         : 0;
+      const mobilityAnchor = continuous
+        && Number.isFinite(prior.mobilityAnchorX)
+        && Number.isFinite(prior.mobilityAnchorY)
+        ? { x: prior.mobilityAnchorX, y: prior.mobilityAnchorY }
+        : segment.from;
+      const leftStallArea = Math.hypot(
+        segment.to.x - mobilityAnchor.x,
+        segment.to.y - mobilityAnchor.y,
+      ) >= this.config.pressureStallDistance;
+      const expectsProgress = remainingBefore > this.config.arrivalRadius;
+      segment.immobileTicks = expectsProgress && !leftStallArea
+        ? (continuous ? Math.max(0, prior.immobileTicks ?? 0) : 0) + 1
+        : 0;
+      const nextMobilityAnchor = leftStallArea || !expectsProgress
+        ? segment.to
+        : mobilityAnchor;
       journeys.set(segment.agentId, {
         targetX: segment.pressureTo.x,
         targetY: segment.pressureTo.y,
@@ -869,7 +895,10 @@ export class PublicCirculation {
         detourDistance: segment.detourDistance,
         detourRatio: segment.detourRatio,
         stalledTicks: segment.stalledTicks,
+        immobileTicks: segment.immobileTicks,
         blockedLandId: blockedIntent ? segment.blockedLandId : null,
+        mobilityAnchorX: nextMobilityAnchor.x,
+        mobilityAnchorY: nextMobilityAnchor.y,
         lastX: segment.to.x,
         lastY: segment.to.y,
       });
@@ -934,21 +963,24 @@ export class PublicCirculation {
       const detourPressure = segment.detourRatio >= this.config.pressureDetourRatio
         && segment.detourDistance >= this.config.pressureDetourDistance
         && segment.stepExtraDistance > 0.05;
-      const stallPressure = segment.blockedLandId !== null
+      const collisionPressure = segment.blockedLandId !== null
         && segment.stalledTicks >= this.config.pressureStallTicks;
-      if (!detourPressure && !stallPressure) continue;
+      const immobilityPressure = segment.immobileTicks >= this.config.pressureStallTicks;
+      if (!detourPressure && !collisionPressure && !immobilityPressure) continue;
       const pressureTarget = segment.pressureTo;
       const dx = pressureTarget.x - segment.from.x;
       const dy = pressureTarget.y - segment.from.y;
       if (Math.hypot(dx, dy) <= EPSILON) continue;
       const angle = Math.atan2(dy, dx);
-      const stalledIndex = stallPressure ? this.#indexById.get(segment.blockedLandId) : undefined;
+      const stalledIndex = collisionPressure
+        ? this.#indexById.get(segment.blockedLandId)
+        : undefined;
       const validStalledIndex = stalledIndex !== undefined
         && this.#isClaimed(stalledIndex)
         && !easements[stalledIndex]
         ? stalledIndex
         : undefined;
-      const blockedIndex = validStalledIndex ?? (detourPressure
+      const directBlockedIndex = detourPressure || immobilityPressure
         ? this.#segmentCells(segment.from, pressureTarget)
           .filter((index) => this.#isClaimed(index) && !easements[index])
           .sort((first, second) => (
@@ -960,18 +992,26 @@ export class PublicCirculation {
               segment.from.y - this.cells[second].center.y,
             ) || compareIds(this.cells[first].id, this.cells[second].id)
           ))[0]
-        : undefined);
+        : undefined;
+      const blockedIndex = validStalledIndex ?? directBlockedIndex;
       if (blockedIndex === undefined) continue;
       let contribution = detourPressure ? this.config.pressureContribution * clamp(
         segment.stepExtraDistance / Math.max(1, this.config.flowResolution * 0.2),
         0.25,
         2.5,
       ) : 0;
-      if (validStalledIndex === blockedIndex) {
+      const collisionFrustration = validStalledIndex === blockedIndex
+        ? segment.stalledTicks
+        : 0;
+      const immobilityFrustration = immobilityPressure && directBlockedIndex === blockedIndex
+        ? segment.immobileTicks
+        : 0;
+      const frustrationTicks = Math.max(collisionFrustration, immobilityFrustration);
+      if (frustrationTicks >= this.config.pressureStallTicks) {
         // A single prolonged stall can eventually open a crossing, while the
         // shared cell pressure still lets several frustrated walkers do so
         // sooner. The cap keeps pathological stalls bounded.
-        const overdueTicks = segment.stalledTicks - this.config.pressureStallTicks;
+        const overdueTicks = frustrationTicks - this.config.pressureStallTicks;
         contribution += this.config.pressureStallContribution * clamp(
           1 + overdueTicks / this.config.pressureStallTicks,
           1,
@@ -993,17 +1033,25 @@ export class PublicCirculation {
       pressurePointY[blockedIndex] += (segment.from.y + dy * projection) * contribution;
       if (pressures[blockedIndex] < this.config.easementPressureThreshold) continue;
       easements[blockedIndex] = 1;
+      const collisionCause = collisionFrustration >= this.config.pressureStallTicks;
+      const immobilityCause = !collisionCause
+        && immobilityFrustration >= this.config.pressureStallTicks;
       events.push(Object.freeze({
         type: "pressure-easement",
         tick: nextTick,
         landId: this.cells[blockedIndex].id,
         pressure: pressures[blockedIndex],
-        cause: detourPressure && validStalledIndex === blockedIndex
+        cause: detourPressure && collisionCause
           ? "detour-and-stall"
-          : validStalledIndex === blockedIndex ? "stall" : "detour",
+          : detourPressure && immobilityCause
+            ? "detour-and-immobility"
+            : collisionCause
+              ? "stall"
+              : immobilityCause ? "immobility" : "detour",
         detourDistance: segment.detourDistance,
         detourRatio: segment.detourRatio,
         stalledTicks: segment.stalledTicks,
+        immobileTicks: segment.immobileTicks,
       }));
     }
     const publicAcquisitions = freezeArray(this.cells
@@ -1151,8 +1199,9 @@ export class PublicCirculation {
       const index = this.#indexById.get(landId);
       if (index === undefined) continue;
       if (!acceptedAcquisitions.has(landId)) {
-        // A rejected acquisition (for example one that would split a parcel)
-        // must earn another sustained-use window before it is reconsidered.
+        // A rejected acquisition (for example a target whose tenure changed
+        // during arbitration) must earn another sustained-use window before
+        // it is reconsidered.
         next.easementFormation[index] = 0;
         continue;
       }
@@ -1292,8 +1341,13 @@ export class PublicCirculation {
     const totalDetourDistance = journeys.reduce((sum, journey) => sum + journey.detourDistance, 0);
     const totalDetourRatio = journeys.reduce((sum, journey) => sum + journey.detourRatio, 0);
     const blockedJourneys = journeys.filter((journey) => (journey.stalledTicks ?? 0) > 0);
-    const frustratedJourneys = blockedJourneys.filter(
-      (journey) => journey.stalledTicks >= this.config.pressureStallTicks,
+    const locallyBoundJourneys = journeys.filter((journey) => (journey.immobileTicks ?? 0) > 0);
+    const immobileJourneys = journeys.filter(
+      (journey) => (journey.immobileTicks ?? 0) >= this.config.pressureStallTicks,
+    );
+    const frustratedJourneys = journeys.filter(
+      (journey) => Math.max(journey.stalledTicks ?? 0, journey.immobileTicks ?? 0)
+        >= this.config.pressureStallTicks,
     );
     return Object.freeze({
       roadCells,
@@ -1320,9 +1374,14 @@ export class PublicCirculation {
       easementAcquisitions: this.counters.easementAcquisitions,
       activeJourneys: journeys.length,
       blockedAgents: blockedJourneys.length,
+      immobileAgents: immobileJourneys.length,
       frustratedAgents: frustratedJourneys.length,
       maxStalledTicks: blockedJourneys.reduce(
         (maximum, journey) => Math.max(maximum, journey.stalledTicks),
+        0,
+      ),
+      maxImmobileTicks: locallyBoundJourneys.reduce(
+        (maximum, journey) => Math.max(maximum, journey.immobileTicks),
         0,
       ),
       meanJourneyDetourDistance: journeys.length > 0 ? totalDetourDistance / journeys.length : 0,

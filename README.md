@@ -21,9 +21,9 @@ desire paths, public streets, and territory.
 - **Trace · reveal desire paths** — edit blocks and destination gates, then watch
   repeated journeys create a fading footfall field that influences later movement.
 - **Territory · paths become streets** — observe well-beaten continuous paths mature
-  into streets as walkers adapt within a bounded forward view; quiet streets fade,
-  parcels follow frontage, and costly detours or prolonged blockage create easements
-  that sustained use can turn into public right-of-way.
+  into streets as walkers adapt within a bounded forward view; clear plots follow
+  established frontage, quiet streets fade, and sustained easements can cut parcels
+  into public right-of-way.
 
 Useful controls include pause, single-step, same-seed reset, population, tempo,
 relationship overlays, delayed sensing, and drag-to-perturb interventions.
@@ -54,7 +54,9 @@ it local, or set `PORT=8080` to use another port.
 
 The model is deterministic for an untouched run: scenario, code, parameters,
 population, and seed reproduce the same state. This makes A/B comparisons suitable
-for classroom discussion.
+for classroom discussion. Compare paused runs at the same tick; the short visual tail
+behind each walker is sampled from displayed frames and can look different after a
+tempo change even though agents, tenure, fields, and streets replay exactly.
 
 ## Design and safety notes
 

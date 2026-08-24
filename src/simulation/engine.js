@@ -368,6 +368,39 @@ export class SimulationEngine {
     return Object.freeze([...authored, ...privateCells]);
   }
 
+  #occupiedLandIds(agents) {
+    if (!this.land || !Array.isArray(agents)) return Object.freeze([]);
+    const { geometry, cells, policy } = this.land.config;
+    const pitch = Math.max(EPSILON, finiteOr(geometry.pitch, geometry.cellSize + geometry.gap));
+    const clearance = Math.max(0, finiteOr(policy.occupancyClearance, 0));
+    const occupied = new Set();
+    for (const agent of agents) {
+      const radius = Math.max(0, finiteOr(agent.radius, 0)) + clearance;
+      let minimumColumn = Math.floor((agent.x - radius - geometry.x) / pitch);
+      let maximumColumn = Math.floor((agent.x + radius - geometry.x) / pitch);
+      let minimumRow = Math.floor((agent.y - radius - geometry.y) / pitch);
+      let maximumRow = Math.floor((agent.y + radius - geometry.y) / pitch);
+      if (maximumColumn < 0 || minimumColumn >= geometry.columns
+        || maximumRow < 0 || minimumRow >= geometry.rows) continue;
+      minimumColumn = clamp(minimumColumn, 0, geometry.columns - 1);
+      maximumColumn = clamp(maximumColumn, 0, geometry.columns - 1);
+      minimumRow = clamp(minimumRow, 0, geometry.rows - 1);
+      maximumRow = clamp(maximumRow, 0, geometry.rows - 1);
+      for (let row = minimumRow; row <= maximumRow; row += 1) {
+        for (let column = minimumColumn; column <= maximumColumn; column += 1) {
+          const cell = cells[row * geometry.columns + column];
+          if (!cell) continue;
+          const nearestX = clamp(agent.x, cell.x, cell.x + cell.width);
+          const nearestY = clamp(agent.y, cell.y, cell.y + cell.height);
+          if ((agent.x - nearestX) ** 2 + (agent.y - nearestY) ** 2 <= radius ** 2 + EPSILON) {
+            occupied.add(cell.id);
+          }
+        }
+      }
+    }
+    return Object.freeze([...occupied].sort());
+  }
+
   #recordObservation({ replace = false } = {}) {
     this.#canonicalizeAgents();
     const views = Object.freeze(this.#createViews());
@@ -586,6 +619,7 @@ export class SimulationEngine {
     const landIntents = [];
     const neighborCache = new WeakMap();
     const observationCache = new WeakMap();
+    const occupiedLandIds = this.#occupiedLandIds(this.agents);
 
     for (let index = 0; index < this.agents.length; index += 1) {
       const agent = this.agents[index];
@@ -617,7 +651,7 @@ export class SimulationEngine {
         destinations,
         obstacles,
         field: fieldApi,
-        land: this.land?.viewFor(agent.id, this.tick) || null,
+        land: this.land?.viewFor(agent.id, this.tick, { occupiedLandIds }) || null,
         circulation: this.circulation?.viewFor(views[index], this.tick) || null,
         tick: this.tick,
         sense: observation,
@@ -773,6 +807,7 @@ export class SimulationEngine {
       publicCells: this.circulation?.publicLandIds?.() || [],
       publicCandidates: circulationTransition?.publicCandidates || [],
       publicAcquisitions: circulationTransition?.publicAcquisitions || [],
+      occupiedLandIds: this.#occupiedLandIds(nextAgents),
     }) || null;
     if (landTransition && !landTransition.ok) {
       this.lastError = {
