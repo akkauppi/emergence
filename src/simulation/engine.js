@@ -779,9 +779,10 @@ export class SimulationEngine {
       this.circulation.commit(circulationTransition, {
         acceptedLandIds: landTransition?.acceptedPublicLandIds || [],
         acceptedAcquisitionLandIds: landTransition?.acceptedPublicAcquisitionLandIds || [],
+        returnFrame: false,
       });
     }
-    if (landTransition) this.land.commit(landTransition);
+    if (landTransition) this.land.commit(landTransition, { returnFrame: false });
     this.tick += 1;
     this.#recordObservation();
     this.lastError = null;
@@ -828,9 +829,12 @@ export class SimulationEngine {
     return { ok: true, intervention };
   }
 
-  metrics() {
+  metrics({
+    circulationMetrics = this.circulation?.metrics(),
+    landMetrics = this.land?.metrics(),
+  } = {}) {
     const count = this.agents.length;
-    const circulationMetrics = this.circulation?.metrics() || {
+    circulationMetrics ||= {
       roadCells: 0,
       roadReservedCells: 0,
       activeRouteCells: 0,
@@ -840,7 +844,7 @@ export class SimulationEngine {
       networkComponents: 0,
       meanRoadUse: 0,
     };
-    const landMetrics = this.land?.metrics() || {
+    landMetrics ||= {
       claimedCells: 0,
       reservedCells: 0,
       claimedShare: 0,
@@ -958,7 +962,7 @@ export class SimulationEngine {
     return clamp(Math.exp(-meanError / 82) * 100, 0, 100);
   }
 
-  frame() {
+  frame({ includeChecksum = true } = {}) {
     const configuredDelayTicks = clamp(
       Math.round(finiteOr(Number(this.params.delayTicks), 0)),
       0,
@@ -1029,30 +1033,32 @@ export class SimulationEngine {
       seed: this.seed,
       width: this.width,
       height: this.height,
-      checksum: stateChecksum(this.agents, this.tick, {
-        delayTicks: this.params.delayTicks,
-        eventCursor: this.eventCursor,
-        history: this.observationHistory,
-        configuration: {
-          seed: this.seed,
-          population: this.population,
-          width: this.width,
-          height: this.height,
-          dt: this.dt,
-          params: this.params,
-          relationMode: this.relationMode,
-          ruleKey: this.ruleKey,
-          ...(this.environment ? { environment: this.environment } : {}),
-        },
-        journey: this.environment?.journeys.enabled ? {
-          trips: this.trips,
-          destinationIds: this.agents.map((agent) => agent.destinationId),
-          arrivalCounts: this.agents.map((agent) => agent.arrivalCount),
-        } : undefined,
-        field: this.field?.values,
-        land: this.land?.checksumState(),
-        circulation: this.circulation?.checksumState(),
-      }),
+      checksum: includeChecksum
+        ? stateChecksum(this.agents, this.tick, {
+          delayTicks: this.params.delayTicks,
+          eventCursor: this.eventCursor,
+          history: this.observationHistory,
+          configuration: {
+            seed: this.seed,
+            population: this.population,
+            width: this.width,
+            height: this.height,
+            dt: this.dt,
+            params: this.params,
+            relationMode: this.relationMode,
+            ruleKey: this.ruleKey,
+            ...(this.environment ? { environment: this.environment } : {}),
+          },
+          journey: this.environment?.journeys.enabled ? {
+            trips: this.trips,
+            destinationIds: this.agents.map((agent) => agent.destinationId),
+            arrivalCounts: this.agents.map((agent) => agent.arrivalCount),
+          } : undefined,
+          field: this.field?.values,
+          land: this.land?.checksumState(),
+          circulation: this.circulation?.checksumState(),
+        })
+        : null,
       eventCursor: this.eventCursor,
       lastIntervention: this.interventions.at(-1) || null,
       configuredDelayTicks,
@@ -1064,7 +1070,10 @@ export class SimulationEngine {
         x: view.position.x,
         y: view.position.y,
       })),
-      metrics: this.metrics(),
+      metrics: this.metrics({
+        circulationMetrics: circulationFrame?.metrics,
+        landMetrics: landFrame?.metrics,
+      }),
       environment: environmentFrame,
       field: fieldFrame,
       land: landFrame,

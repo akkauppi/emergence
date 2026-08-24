@@ -19,7 +19,10 @@ function emit(type, detail = {}) {
 }
 
 function emitFrame() {
-  if (engine) emit("frame", { frame: engine.frame() });
+  // Replay checksums are useful at stable interaction boundaries, but the UI
+  // does not consume one for every animation frame. Avoiding that deep state
+  // walk keeps continuous playback responsive as territory state grows.
+  if (engine) emit("frame", { frame: engine.frame({ includeChecksum: !running }) });
 }
 
 function setRunning(value) {

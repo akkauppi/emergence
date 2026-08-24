@@ -58,6 +58,16 @@ test("same seed and behavior produce the same state checksum", () => {
   assert.deepEqual(first.frame().metrics, second.frame().metrics);
 });
 
+test("live frames can skip checksum work without changing visible state", () => {
+  const engine = createEngine("between");
+  engine.step(12);
+  const exact = engine.frame();
+  const live = engine.frame({ includeChecksum: false });
+
+  assert.equal(live.checksum, null);
+  assert.deepEqual({ ...live, checksum: exact.checksum }, exact);
+});
+
 test("the midpoint rule visibly contracts the group", () => {
   const engine = createEngine("between");
   const initial = engine.metrics();

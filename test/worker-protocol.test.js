@@ -5,6 +5,7 @@ import { copyParameters, getScenario } from "../src/scenarios.js";
 
 const messages = [];
 let receiveMessage = null;
+let runInterval = null;
 const nativeSetInterval = globalThis.setInterval;
 
 globalThis.self = {
@@ -15,7 +16,10 @@ globalThis.self = {
     if (type === "message") receiveMessage = handler;
   },
 };
-globalThis.setInterval = () => 0;
+globalThis.setInterval = (callback) => {
+  runInterval = callback;
+  return 0;
+};
 await import("../src/simulation/engine.worker.js");
 globalThis.setInterval = nativeSetInterval;
 
@@ -219,4 +223,17 @@ test("territory worker frames clone, mature and retire streets, reset, and repla
   assert.deepEqual(replayFrame.land, evolvedFrame.land);
   assert.deepEqual(replayFrame.circulation, evolvedFrame.circulation);
   assert.deepEqual(replayFrame.metrics, evolvedFrame.metrics);
+});
+
+test("continuous playback skips replay checksum work in live frames", () => {
+  const beforePlay = messages.length;
+  send({ type: "play", worldRevision: 6 });
+  runInterval();
+  const playbackMessages = messages.slice(beforePlay);
+
+  assert.deepEqual(playbackMessages.map((message) => message.type), ["status", "frame"]);
+  assert.equal(playbackMessages[1].frame.tick, 361);
+  assert.equal(playbackMessages[1].frame.checksum, null);
+
+  send({ type: "pause", worldRevision: 6 });
 });

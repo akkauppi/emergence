@@ -16,6 +16,7 @@ const EDGE_ALIASES = Object.freeze({
   left: "west",
 });
 const transitionStates = new WeakMap();
+const EMPTY_LIST = Object.freeze([]);
 
 const clamp = (value, minimum, maximum) => Math.max(minimum, Math.min(maximum, value));
 const finiteOr = (value, fallback) => Number.isFinite(Number(value)) ? Number(value) : fallback;
@@ -307,6 +308,7 @@ export class LandGridState {
   #indexById;
   #dynamicCache;
   #parcelCache;
+  #viewCache;
 
   constructor(config, { seed = 0, worldWidth, worldHeight } = {}) {
     this.config = normalizeLandConfig(config, worldWidth, worldHeight);
@@ -338,6 +340,7 @@ export class LandGridState {
     this.revision = 0;
     this.#dynamicCache = null;
     this.#parcelCache = null;
+    this.#viewCache = null;
     return this.frame(0);
   }
 
@@ -370,10 +373,46 @@ export class LandGridState {
     const id = Number(ownerId);
     if (!Number.isSafeInteger(id) || id < 0) throw new TypeError("A land view requires a non-negative integer owner ID.");
     const currentTick = Math.max(0, Math.round(finiteOr(tick, 0)));
-    const cells = freezeArray(this.#dynamicCells());
-    const byId = new Map(cells.map((cell) => [cell.id, cell]));
-    const mine = freezeArray(cells.filter((cell) => cell.ownerId === id).map((cell) => cell.id));
-    const reserved = cells.find((cell) => cell.reservedBy === id) ?? null;
+    if (this.#viewCache?.revision !== this.revision) {
+      const cells = this.#dynamicCells();
+      const byId = new Map();
+      const mineByOwner = new Map();
+      const reservationByOwner = new Map();
+      const neighborsById = new Map();
+      for (const cell of cells) {
+        byId.set(cell.id, cell);
+        if (cell.ownerId !== null) {
+          if (!mineByOwner.has(cell.ownerId)) mineByOwner.set(cell.ownerId, []);
+          mineByOwner.get(cell.ownerId).push(cell.id);
+        }
+        if (cell.reservedBy !== null && !reservationByOwner.has(cell.reservedBy)) {
+          reservationByOwner.set(cell.reservedBy, cell);
+        }
+      }
+      for (const [owner, mine] of mineByOwner) mineByOwner.set(owner, freezeArray(mine));
+      const cell = (landId) => byId.get(String(landId)) ?? null;
+      const neighbors = (landId) => {
+        const key = String(landId);
+        if (neighborsById.has(key)) return neighborsById.get(key);
+        const target = byId.get(key);
+        const result = target
+          ? freezeArray(target.neighborIds.map((neighborId) => byId.get(neighborId)))
+          : EMPTY_LIST;
+        neighborsById.set(key, result);
+        return result;
+      };
+      this.#viewCache = {
+        revision: this.revision,
+        cells,
+        mineByOwner,
+        reservationByOwner,
+        cell,
+        neighbors,
+      };
+    }
+    const view = this.#viewCache;
+    const mine = view.mineByOwner.get(id) ?? EMPTY_LIST;
+    const reserved = view.reservationByOwner.get(id) ?? null;
     const reservation = reserved ? Object.freeze({
       landId: reserved.id,
       reservedAt: reserved.reservedAt,
@@ -383,16 +422,12 @@ export class LandGridState {
     }) : null;
     return Object.freeze({
       enabled: this.config.enabled,
-      cells,
+      cells: view.cells,
       mine,
       reservation,
       policy: this.config.policy,
-      cell: (landId) => byId.get(String(landId)) ?? null,
-      neighbors: (landId) => {
-        const cell = byId.get(String(landId));
-        if (!cell) return freezeArray([]);
-        return freezeArray(cell.neighborIds.map((neighborId) => byId.get(neighborId)));
-      },
+      cell: view.cell,
+      neighbors: view.neighbors,
     });
   }
 
@@ -764,7 +799,7 @@ export class LandGridState {
     return transition;
   }
 
-  commit(transition) {
+  commit(transition, { returnFrame = true } = {}) {
     const next = transitionStates.get(transition);
     if (!next || next.source !== this) throw new TypeError("The land transition was not staged by this store.");
     if (next.baseRevision !== this.revision) throw new Error("The land transition is stale and cannot be committed.");
@@ -779,8 +814,9 @@ export class LandGridState {
     this.revision += 1;
     this.#dynamicCache = null;
     this.#parcelCache = null;
+    this.#viewCache = null;
     transitionStates.delete(transition);
-    return this.frame(transition.tick);
+    return returnFrame ? this.frame(transition.tick) : null;
   }
 
   #parcels() {

@@ -562,11 +562,16 @@ export class PublicCirculation {
       const use = segment.use * persistence;
       if (use < FLOW_MINIMUM_USE && !segment.street && (segment.formationTicks ?? 0) <= 0) continue;
       next.set(key, {
-        ...segment,
-        use,
-        load: 0,
+        key: segment.key,
+        x: segment.x,
+        y: segment.y,
         axisX: segment.axisX * persistence,
         axisY: segment.axisY * persistence,
+        use,
+        load: 0,
+        street: segment.street,
+        formationTicks: segment.formationTicks,
+        quietTicks: segment.quietTicks,
       });
     }
 
@@ -589,18 +594,27 @@ export class PublicCirculation {
       const existing = next.get(key);
       const priorUse = existing?.use ?? 0;
       const use = priorUse + 1;
-      next.set(key, {
-        key,
-        x: ((existing?.x ?? 0) * priorUse + midpointX) / use,
-        y: ((existing?.y ?? 0) * priorUse + midpointY) / use,
-        axisX: (existing?.axisX ?? 0) + Math.cos(angle * 2),
-        axisY: (existing?.axisY ?? 0) + Math.sin(angle * 2),
-        use,
-        load: (existing?.load ?? 0) + 1,
-        street: existing?.street === true,
-        formationTicks: existing?.formationTicks ?? 0,
-        quietTicks: existing?.quietTicks ?? 0,
-      });
+      if (existing) {
+        existing.x = (existing.x * priorUse + midpointX) / use;
+        existing.y = (existing.y * priorUse + midpointY) / use;
+        existing.axisX += Math.cos(angle * 2);
+        existing.axisY += Math.sin(angle * 2);
+        existing.use = use;
+        existing.load += 1;
+      } else {
+        next.set(key, {
+          key,
+          x: midpointX,
+          y: midpointY,
+          axisX: Math.cos(angle * 2),
+          axisY: Math.sin(angle * 2),
+          use,
+          load: 1,
+          street: false,
+          formationTicks: 0,
+          quietTicks: 0,
+        });
+      }
     }
 
     const events = [];
@@ -645,7 +659,9 @@ export class PublicCirculation {
         next.delete(key);
         continue;
       }
-      next.set(key, { ...segment, street, formationTicks, quietTicks });
+      segment.street = street;
+      segment.formationTicks = formationTicks;
+      segment.quietTicks = quietTicks;
     }
 
     const limited = next.size <= MAX_FLOW_FEATURES
@@ -1058,6 +1074,7 @@ export class PublicCirculation {
   commit(transition, {
     acceptedLandIds = [],
     acceptedAcquisitionLandIds = [],
+    returnFrame = true,
   } = {}) {
     const next = transitionStates.get(transition);
     if (!next || next.source !== this) throw new TypeError("The circulation transition was not staged by this store.");
@@ -1161,7 +1178,7 @@ export class PublicCirculation {
     this.revision += 1;
     this.#viewCache = null;
     transitionStates.delete(transition);
-    return this.frame();
+    return returnFrame ? this.frame() : null;
   }
 
   metrics() {
