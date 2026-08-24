@@ -135,9 +135,9 @@ The current vertical slice includes editable weighted destination gates, editabl
 rectangular obstacles and block grids, repeated multi-gate journeys, obstacle collision,
 a deposited/decaying footfall grid, behavior-level field sensing, a rendered heat field,
 trip counts, and trail concentration. Its local navigation rule handles multiple blocks
-and arbitrary gate directions deterministically without private agent memory. Local
-field of view, heterogeneous traveller preferences, congestion measures, and
-side-by-side comparison remain follow-ups.
+and arbitrary gate directions deterministically without private agent memory. A bounded
+local field of view is now implemented in Territory 03; heterogeneous traveller
+preferences, congestion measures, and side-by-side comparison remain follow-ups.
 
 Measurements: polarization, connected components, trip length, detour ratio, trail concentration, density heat maps, and side-by-side metric histories.
 
@@ -166,6 +166,11 @@ its internal tenure index, while movement and visible paths use continuous geome
   a temporary bridge.
 - There is no preset block or street grid. Entry cells provide the small public seed
   from which circulation can grow.
+- Ordinary walkers retain a rough destination bearing but inspect only 13 candidate
+  steps inside a bounded forward view. Current velocity supplies short path memory,
+  while nearby fading footfall can outweigh the most direct visible step. Only local
+  obstacles and the visible corners of the nearest blocking parcel are considered;
+  walkers do not receive a completed route around the parcel.
 - The frozen `circulation` observation exposes `route(landId)` for approaching a legal
   parcel frontage. Its cadastral support search remains deterministic, but ordinary
   journeys do not follow that grid: actual movement segments accumulate into an
@@ -213,7 +218,8 @@ its internal tenure index, while movement and visible paths use continuous geome
 
 Initial land sequence:
 
-1. Walk between gates and accumulate continuous, angle-preserving movement traces.
+1. Choose locally within a bounded forward view and accumulate continuous,
+   angle-preserving movement traces.
 2. Promote only repeatedly reinforced traces, and retire streets after sustained low use.
 3. After the warm-up, seed private parcels beside the busiest eligible frontage.
 4. Grow each parcel contiguously toward a bounded target area, balancing compactness and suitability.
@@ -233,6 +239,9 @@ easements and acquired rights-of-way, road cells and growth, network components,
 reservations, and road/plot conflicts.
 
 #### Modeling rationale and organic-growth directions
+
+The evidence survey, implementation decision, deterministic baseline, and alternatives
+kept as separate experiments are recorded in [the urban-growth research notes](RESEARCH.md).
 
 The implemented feedbacks are intentionally local. Reinforcement plus decay follows the
 [active-walker account of pedestrian trail formation](https://arxiv.org/abs/cond-mat/9806097),
@@ -302,7 +311,8 @@ Conflicting actions are grouped by target and resolved centrally. A reservation 
 - Obstacles and repeat origin/destination journeys (implemented for editable rectangular blocks, block grids, and weighted multi-gate destinations)
 - Footfall field, decay, desire-path renderer, and scenario-authored metric panels (implemented foundation)
 - Direct-manipulation layout tools with same-seed, cleared-field restarts (implemented)
-- Field of view and heterogeneous agents or traveller-specific destination preferences
+- Bounded field of view in Territory (implemented); heterogeneous agents or
+  traveller-specific destination preferences remain
 - Checkpoints/replay and downloadable CSV measurements
 
 ### 0.3 — Claims and parcels

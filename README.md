@@ -21,8 +21,9 @@ desire paths, public streets, and territory.
 - **Trace · reveal desire paths** — edit blocks and destination gates, then watch
   repeated journeys create a fading footfall field that influences later movement.
 - **Territory · paths become streets** — observe well-beaten continuous paths mature
-  into streets, quiet streets fade, parcels follow frontage, and costly detours create
-  easements that sustained use can turn into public right-of-way.
+  into streets as walkers adapt within a bounded forward view; quiet streets fade,
+  parcels follow frontage, and costly detours create easements that sustained use can
+  turn into public right-of-way.
 
 Useful controls include pause, single-step, same-seed reset, population, tempo,
 relationship overlays, delayed sensing, and drag-to-perturb interventions.
@@ -62,8 +63,10 @@ snapshot before committing changes. The editable classroom behavior runs in a
 disposable Web Worker so an accidental infinite loop can be recovered. A worker is
 not a security boundary, so do not run untrusted shared code.
 
-See [the product and implementation plan](docs/PLAN.md) for the teaching sequence,
-architecture, current territory model, and future work.
+See [the product and implementation plan](docs/PLAN.md) for the teaching sequence and
+architecture. The [urban-growth research notes](docs/RESEARCH.md) connect Territory's
+modeling decisions to papers and reference implementations, record the deterministic
+A/B comparison, and separate planned extensions from standalone comparison demos.
 
 ## Contributing
 

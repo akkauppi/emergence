@@ -55,6 +55,7 @@ function runBehavior({
   circulationCells = {},
   routes = {},
   publicIds = [],
+  params = {},
 } = {}) {
   const behavior = compileBehavior(scenario.source);
   const byId = new Map((cells || []).map((entry) => [entry.id, entry]));
@@ -72,7 +73,7 @@ function runBehavior({
     destination,
     obstacles,
     field: { sample: fieldSample },
-    params: { ...scenario.params },
+    params: { ...scenario.params, ...params },
     vec: vectorApi(seekTargets),
     world: { width: 1_000, height: 650 },
     tick,
@@ -170,6 +171,15 @@ test("territory scenario couples an ordinary land grid to journeys, traces, and 
     easementAcquisitionThreshold: 15,
     easementAcquisitionTicks: 24,
   });
+  assert.deepEqual(
+    {
+      viewAngle: scenario.params.viewAngle,
+      viewDepth: scenario.params.viewDepth,
+      routeMomentum: scenario.params.routeMomentum,
+    },
+    { viewAngle: 110, viewDepth: 70, routeMomentum: 0.55 },
+  );
+  assert.ok(scenario.controls.some(({ key }) => key === "viewAngle"));
 });
 
 test("walking follows desire lines while settlement favors busy public frontage", () => {
@@ -177,11 +187,11 @@ test("walking follows desire lines while settlement favors busy public frontage"
   const busy = cell("land-7-1", 60, 300, { access: 0.4, amenity: 0.3 });
   const busyPath = cell("land-8-1", 60, 340);
   const quietPath = cell("land-8-2", 100, 340);
-  const blocker = { id: "claimed-centre", x: 430, y: 230, width: 140, height: 190 };
+  const blocker = { id: "claimed-centre", x: 142, y: 230, width: 140, height: 190 };
   const { decision, seekTargets } = runBehavior({
     cells: [busy, quiet, busyPath, quietPath],
     obstacles: [blocker],
-    fieldSample: (point) => point.y < blocker.y ? 1 : 0,
+    fieldSample: (point) => point.y < 325 ? 1 : 0,
     neighborIds: {
       [busy.id]: [busyPath.id],
       [quiet.id]: [quietPath.id],
@@ -195,8 +205,44 @@ test("walking follows desire lines while settlement favors busy public frontage"
   assert.equal(decision.reserveLand.landId, busy.id, "the busier cell should attract settlement");
   assert.ok(Number.isFinite(decision.reserveLand.bid));
   assert.equal(seekTargets.length, 1);
-  assert.ok(seekTargets[0].y < blocker.y, "the reinforced upper detour should be preferred");
+  assert.ok(seekTargets[0].y < 325, "the reinforced upper local alternative should be preferred");
   assert.notDeepEqual(seekTargets[0], quiet.center, "settlement never replaces the trip target");
+});
+
+test("wayfinding is bounded and does not plan around a distant blocker", () => {
+  const distant = { id: "distant", x: 430, y: 230, width: 140, height: 190 };
+  const { seekTargets } = runBehavior({ cells: undefined, obstacles: [distant] });
+
+  assert.equal(seekTargets.length, 1);
+  assert.deepEqual(seekTargets[0], { x: 150, y: 325 });
+  assert.equal(Math.hypot(seekTargets[0].x - 80, seekTargets[0].y - 325), scenario.params.viewDepth);
+});
+
+test("local traces can bend a walker's next step inside the forward view", () => {
+  const { seekTargets } = runBehavior({
+    cells: undefined,
+    fieldSample: (point) => point.y < 325 ? 1 : 0,
+  });
+
+  assert.equal(seekTargets.length, 1);
+  assert.ok(seekTargets[0].x > 80);
+  assert.ok(seekTargets[0].y < 325);
+  const angle = Math.abs(Math.atan2(seekTargets[0].y - 325, seekTargets[0].x - 80));
+  assert.ok(angle <= scenario.params.viewAngle * Math.PI / 360 + 0.000001);
+});
+
+test("a nearby claimed block redirects the local step without exposing a complete route", () => {
+  const nearby = { id: "nearby", x: 132, y: 285, width: 90, height: 80 };
+  const { seekTargets } = runBehavior({ cells: undefined, obstacles: [nearby] });
+
+  assert.equal(seekTargets.length, 1);
+  assert.ok(Math.abs(seekTargets[0].y - 325) > 1);
+  assert.ok(
+    seekTargets[0].x < nearby.x ||
+    seekTargets[0].x > nearby.x + nearby.width ||
+    seekTargets[0].y < nearby.y ||
+    seekTargets[0].y > nearby.y + nearby.height,
+  );
 });
 
 test("a site beside active frontage remains reservable, but a public cell does not", () => {
@@ -307,6 +353,6 @@ test("the rule keeps walking when territory observations are unavailable", () =>
   const { decision, seekTargets } = runBehavior({ cells: undefined });
   assert.equal(decision.reserveLand, undefined);
   assert.equal(decision.claimLand, undefined);
-  assert.deepEqual(seekTargets, [{ x: 950, y: 325 }]);
+  assert.deepEqual(seekTargets, [{ x: 150, y: 325 }]);
   assert.ok([decision.acceleration.x, decision.acceleration.y].every(Number.isFinite));
 });

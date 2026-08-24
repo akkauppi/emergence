@@ -413,154 +413,172 @@ function distanceToBlock(point, block) {
   return Math.hypot(dx, dy);
 }
 
-function distanceToSegment(point, from, to) {
-  const segment = { x: to.x - from.x, y: to.y - from.y };
-  const lengthSquared = segment.x * segment.x + segment.y * segment.y;
-  if (lengthSquared < 0.000001) {
-    return Math.hypot(point.x - from.x, point.y - from.y);
-  }
-  const projection = Math.max(0, Math.min(1,
-    ((point.x - from.x) * segment.x +
-      (point.y - from.y) * segment.y) / lengthSquared
-  ));
-  return Math.hypot(
-    point.x - (from.x + segment.x * projection),
-    point.y - (from.y + segment.y * projection)
-  );
+function clamp(value, minimum, maximum) {
+  return Math.max(minimum, Math.min(maximum, value));
 }
 
-// This is the same local preferred-route heuristic as Stage 02: inspect the
-// nearest blocker, compare both directions around all four padded sides, and
-// discount routes already reinforced by footfall.
-function preferredWaypoint(self, goal, obstacles, field, params, vec, world) {
-  const forward = vec.unit(vec.subtract(goal, self.position));
-  const detectionPadding = self.radius + 3;
-  const initialRoutePadding = Math.max(0, self.radius - 0.1);
-  const routePadding = self.radius + 0.5;
-  const waypointPadding = self.radius + 4;
-  let threat = null;
-  let threatScore = Infinity;
+function angleDifference(first, second) {
+  return Math.atan2(Math.sin(first - second), Math.cos(first - second));
+}
 
-  for (const block of obstacles) {
-    const centre = {
-      x: finite(block.x) + finite(block.width) / 2,
-      y: finite(block.y) + finite(block.height) / 2
-    };
-    const ahead = vec.dot(vec.subtract(centre, self.position), forward);
-    const distance = distanceToBlock(self.position, block);
-    const blocking = segmentCrossesBlock(
-      self.position,
-      goal,
-      block,
-      detectionPadding
-    );
-    const nearby = distance < waypointPadding * 1.35 && ahead > -waypointPadding;
-    if (!blocking && !nearby) continue;
-    const score = distance + (blocking ? 0 : waypointPadding * 4);
-    const key = String(block.id);
-    if (
-      score < threatScore - 0.000001 ||
-      (Math.abs(score - threatScore) <= 0.000001 && key < String(threat?.id))
-    ) {
-      threat = block;
-      threatScore = score;
-    }
-  }
+// Keep a rough global bearing, but make the next step from only a bounded
+// forward view. This avoids giving every walker the same complete route around
+// a parcel. Velocity supplies short, physical path memory; fading footfall is
+// the shared local affordance left by earlier walkers.
+function preferredWaypoint(self, goal, obstacles, field, params, world) {
+  const position = self.position;
+  const radius = Math.max(0, finite(self.radius, 0));
+  const toGoal = { x: goal.x - position.x, y: goal.y - position.y };
+  const goalDistance = Math.hypot(toGoal.x, toGoal.y);
+  if (goalDistance <= Math.max(1, radius * 2)) return goal;
 
-  if (!threat) return goal;
-  const left = finite(threat.x) - waypointPadding;
-  const right = finite(threat.x) + finite(threat.width) + waypointPadding;
-  const top = finite(threat.y) - waypointPadding;
-  const bottom = finite(threat.y) + finite(threat.height) + waypointPadding;
-  const corners = [
-    { x: left, y: top },
-    { x: right, y: top },
-    { x: right, y: bottom },
-    { x: left, y: bottom }
-  ];
-  const sides = [[0, 1], [1, 2], [2, 3], [3, 0]];
+  const viewDepth = Math.min(
+    goalDistance,
+    Math.max(radius * 3, finite(params.viewDepth, 70))
+  );
+  const fullView = clamp(finite(params.viewAngle, 110), 45, 170) * Math.PI / 180;
+  const halfView = fullView / 2;
+  const goalAngle = Math.atan2(toGoal.y, toGoal.x);
+  const velocity = self.velocity || { x: 0, y: 0 };
+  const speed = Math.hypot(finite(velocity.x), finite(velocity.y));
+  const motionAngle = speed > 0.5
+    ? Math.atan2(finite(velocity.y), finite(velocity.x))
+    : goalAngle;
+  const momentumLimit = clamp(finite(params.routeMomentum, 0.55), 0, 0.85);
+  const speedReference = Math.max(1, finite(params.maxSpeed, 80) * 0.35);
+  const momentum = momentumLimit * clamp(speed / speedReference, 0, 1);
+  const centreX = Math.cos(goalAngle) * (1 - momentum) + Math.cos(motionAngle) * momentum;
+  const centreY = Math.sin(goalAngle) * (1 - momentum) + Math.sin(motionAngle) * momentum;
+  const centreAngle = Math.atan2(centreY, centreX);
   const sample = typeof field?.sample === "function"
-    ? (point) => Math.max(0, Math.min(1, finite(field.sample(point))))
+    ? (point) => clamp(finite(field.sample(point)), 0, 1)
     : () => 0;
-  const insideWorld = (point) => {
-    const margin = self.radius + 2;
-    return point.x >= margin && point.x <= world.width - margin &&
-      point.y >= margin && point.y <= world.height - margin;
-  };
-  const clearPoint = (point) => insideWorld(point) && obstacles.every((block) =>
-    distanceToBlock(point, block) >= self.radius + 2
+  const margin = radius + 2;
+  const insideWorld = (point) => point.x >= margin && point.x <= world.width - margin &&
+    point.y >= margin && point.y <= world.height - margin;
+
+  // Candidate segments cannot reach obstacles farther away than the bounded
+  // view, so subsequent clearance checks inspect only this local subset.
+  const localObstacles = obstacles.filter((block) =>
+    distanceToBlock(position, block) <= viewDepth + radius + 6
   );
-  const clearInitial = (to) => !segmentCrossesBlock(
-    self.position,
-    to,
-    threat,
-    initialRoutePadding
+  const routePadding = Math.max(0, radius - 0.15);
+  const clearsLocalObstacles = (point) => localObstacles.every((block) =>
+    !segmentCrossesBlock(position, point, block, routePadding)
   );
-  const clearsThreat = (from, to) => !segmentCrossesBlock(
-    from,
-    to,
-    threat,
-    routePadding
-  );
-  const clearCorners = corners.map(clearPoint);
+
+  const stableRank = (Math.imul(Math.round(finite(self.id)) + 1, 2654435761) >>> 0) /
+    4294967296;
+  const handedness = stableRank < 0.5 ? -1 : 1;
+  const trailInfluence = Math.max(0, finite(params.trailInfluence, 1));
   let best = null;
 
-  for (let sideIndex = 0; sideIndex < sides.length; sideIndex += 1) {
-    const [a, b] = sides[sideIndex];
-    for (let order = 0; order < 2; order += 1) {
-      const firstIndex = order === 0 ? a : b;
-      const secondIndex = order === 0 ? b : a;
-      if (!clearCorners[firstIndex] || !clearCorners[secondIndex]) continue;
-      const first = corners[firstIndex];
-      const second = corners[secondIndex];
-      const onCorridor =
-        distanceToSegment(self.position, first, second) < waypointPadding &&
-        clearInitial(second);
-      const waypoint = onCorridor ? second : first;
-      if (
-        !clearInitial(waypoint) ||
-        (!onCorridor && !clearsThreat(first, second)) ||
-        !clearsThreat(second, goal)
-      ) continue;
-      const middle = vec.midpoint(first, second);
-      const distance = vec.distance(self.position, waypoint) +
-        (onCorridor ? 0 : vec.distance(first, second)) +
-        vec.distance(second, goal);
-      const trace = (sample(first) + sample(middle) + sample(second)) / 3;
-      const route = {
-        waypoint,
-        score: distance - trace * params.trailInfluence * 180,
-        tieRank: ((sideIndex + self.id) % 4) * 2 + order
-      };
-      const clearlyShorter = !best || route.score < best.score - 0.75;
-      const tied = best && Math.abs(route.score - best.score) <= 0.75;
-      if (clearlyShorter || (tied && route.tieRank < best.tieRank)) best = route;
+  function consider(point, rank, kind = "view") {
+    if (!insideWorld(point) || !clearsLocalObstacles(point)) return;
+    const stepX = point.x - position.x;
+    const stepY = point.y - position.y;
+    const stepLength = Math.hypot(stepX, stepY);
+    if (stepLength < 0.000001) return;
+    const angle = Math.atan2(stepY, stepX);
+    const goalDelta = angleDifference(angle, goalAngle);
+    const motionDelta = angleDifference(angle, motionAngle);
+    const progress = (goalDistance - Math.hypot(goal.x - point.x, goal.y - point.y)) /
+      stepLength;
+    const directness = Math.cos(goalDelta);
+    const continuity = speed > 0.5 ? Math.cos(motionDelta) : directness;
+    const middle = {
+      x: position.x + stepX * 0.55,
+      y: position.y + stepY * 0.55
+    };
+    const trace = sample(middle) * 0.35 + sample(point) * 0.65;
+    const sideAffinity = handedness * Math.sin(goalDelta) * 0.06;
+    const score =
+      progress * 2.4 +
+      directness * 0.7 +
+      continuity * 0.75 +
+      trace * trailInfluence * 2.2 +
+      sideAffinity -
+      (kind === "corner" ? 0.08 : 0);
+    const candidate = { point, score, rank };
+    if (
+      !best ||
+      candidate.score > best.score + 0.000001 ||
+      (Math.abs(candidate.score - best.score) <= 0.000001 && candidate.rank < best.rank)
+    ) best = candidate;
+  }
+
+  // Thirteen deterministic rays are enough to distinguish local alternatives
+  // without turning each agent step into a graph search.
+  const candidateCount = 13;
+  for (let index = 0; index < candidateCount; index += 1) {
+    const offset = -halfView + fullView * index / (candidateCount - 1);
+    const angle = centreAngle + offset;
+    consider({
+      x: position.x + Math.cos(angle) * viewDepth,
+      y: position.y + Math.sin(angle) * viewDepth
+    }, Math.abs(index - (candidateCount - 1) / 2) * 2 +
+      (handedness < 0 ? index : candidateCount - index));
+  }
+
+  // A nearby blocking rectangle exposes only its padded corners as additional
+  // local affordances. We do not inspect or score the complete route beyond it.
+  let threat = null;
+  let threatDistance = Infinity;
+  for (const block of localObstacles) {
+    if (!segmentCrossesBlock(position, goal, block, radius + 2)) continue;
+    const distance = distanceToBlock(position, block);
+    const key = String(block.id);
+    if (
+      distance < threatDistance - 0.000001 ||
+      (Math.abs(distance - threatDistance) <= 0.000001 && key < String(threat?.id))
+    ) {
+      threat = block;
+      threatDistance = distance;
     }
   }
 
-  if (best) return best.waypoint;
-  // When a parcel cluster invalidates every two-corner template, keep the
-  // walker tangent to its nearest face instead of steering through it.
-  const faces = [
-    { distance: Math.abs(self.position.y - finite(threat.y)), corners: [0, 1], normal: { x: 0, y: -1 } },
-    { distance: Math.abs(self.position.x - finite(threat.x) - finite(threat.width)), corners: [1, 2], normal: { x: 1, y: 0 } },
-    { distance: Math.abs(self.position.y - finite(threat.y) - finite(threat.height)), corners: [2, 3], normal: { x: 0, y: 1 } },
-    { distance: Math.abs(self.position.x - finite(threat.x)), corners: [3, 0], normal: { x: -1, y: 0 } }
-  ].sort((first, second) => first.distance - second.distance);
-  const escapes = faces[0].corners
-    .filter((index) => clearCorners[index] && clearInitial(corners[index]))
-    .map((index, order) => ({
-      waypoint: corners[index],
-      score: vec.distance(self.position, corners[index]) +
-        vec.distance(corners[index], goal) -
-        sample(corners[index]) * params.trailInfluence * 120,
-      tieRank: (order + self.id) % 2
-    }))
-    .sort((first, second) => first.score - second.score || first.tieRank - second.tieRank);
-  return escapes[0]?.waypoint || {
-    x: self.position.x + faces[0].normal.x * (routePadding + 2),
-    y: self.position.y + faces[0].normal.y * (routePadding + 2)
-  };
+  if (threat) {
+    const cornerPadding = radius + 4;
+    const corners = [
+      { x: finite(threat.x) - cornerPadding, y: finite(threat.y) - cornerPadding },
+      { x: finite(threat.x) + finite(threat.width) + cornerPadding, y: finite(threat.y) - cornerPadding },
+      { x: finite(threat.x) + finite(threat.width) + cornerPadding, y: finite(threat.y) + finite(threat.height) + cornerPadding },
+      { x: finite(threat.x) - cornerPadding, y: finite(threat.y) + finite(threat.height) + cornerPadding }
+    ];
+    for (let index = 0; index < corners.length; index += 1) {
+      const corner = corners[index];
+      const distance = Math.hypot(corner.x - position.x, corner.y - position.y);
+      const offset = Math.abs(angleDifference(
+        Math.atan2(corner.y - position.y, corner.x - position.x),
+        centreAngle
+      ));
+      if (distance <= viewDepth * 1.35 && offset <= halfView + Math.PI / 9) {
+        consider(corner, candidateCount * 2 + ((index + Math.round(self.id)) % 4), "corner");
+      }
+    }
+  }
+
+  if (best) return best.point;
+
+  // At a sealed face, move outward before looking again on the next tick. This
+  // is a local collision escape, not a hidden route planner.
+  if (threat || localObstacles.length > 0) {
+    const nearest = threat || [...localObstacles].sort((first, second) =>
+      distanceToBlock(position, first) - distanceToBlock(position, second) ||
+      String(first.id).localeCompare(String(second.id))
+    )[0];
+    const faces = [
+      { distance: Math.abs(position.y - finite(nearest.y)), normal: { x: 0, y: -1 } },
+      { distance: Math.abs(position.x - finite(nearest.x) - finite(nearest.width)), normal: { x: 1, y: 0 } },
+      { distance: Math.abs(position.y - finite(nearest.y) - finite(nearest.height)), normal: { x: 0, y: 1 } },
+      { distance: Math.abs(position.x - finite(nearest.x)), normal: { x: -1, y: 0 } }
+    ].sort((first, second) => first.distance - second.distance);
+    return {
+      x: position.x + faces[0].normal.x * (radius + 3),
+      y: position.y + faces[0].normal.y * (radius + 3)
+    };
+  }
+  return goal;
 }
 
 function behave({ self, destination, obstacles, field, params, vec, world, land, circulation, tick = 0 }) {
@@ -575,7 +593,6 @@ function behave({ self, destination, obstacles, field, params, vec, world, land,
       Array.isArray(obstacles) ? obstacles : [],
       field,
       params,
-      vec,
       world
     )
     : null;
@@ -1028,14 +1045,14 @@ export const scenarios = [
     kicker: "Movement reserves the public realm",
     stage: { number: "03", label: "Territory laboratory / 03" },
     description:
-      "People make repeated trips while their continuous trajectories reinforce a fading off-grid flow network. Only repeatedly used traces mature into streets, and quiet streets degenerate again. Surviving frontage attracts bounded private parcels; only costly accumulated detours build crossing pressure, and a heavily used easement can mature into permanent public right-of-way.",
+      "People keep a rough destination bearing but choose each step from a bounded forward view, adapting to nearby traces and obstacles. Their continuous trajectories reinforce a fading off-grid flow network: only repeatedly used traces mature into streets, quiet streets degenerate, surviving frontage attracts parcels, and costly detours can create public crossings.",
     steps: [
-      "Reveal fading desire lines",
+      "Adapt locally within a forward view",
       "Promote only well-beaten paths",
       "Negotiate costly crossings",
     ],
     question:
-      "Before running: which paths will survive, and where will a detour become costly enough to justify a crossing? Change route protection, reset with the same seed, and compare where settlement and public right-of-way emerge.",
+      "Before running: will a narrower forward view create more branches, or merely longer trips? Change forward view, reset with the same seed, and compare surviving paths, settlement, and public crossings.",
     relationMode: "none",
     matchLabel: "claimed land held in compact parcels",
     summaryMetrics: [
@@ -1151,6 +1168,9 @@ export const scenarios = [
     },
     params: {
       trailInfluence: 1,
+      viewAngle: 110,
+      viewDepth: 70,
+      routeMomentum: 0.55,
       throughRoutePenalty: 1.1,
       settlementStartTick: 90,
       minimumSiteUse: 2,
@@ -1170,6 +1190,7 @@ export const scenarios = [
     },
     controls: [
       { key: "trailInfluence", label: "Preferred routes", min: 0, max: 2, step: 0.05, format: "decimal-2" },
+      { key: "viewAngle", label: "Forward view", min: 60, max: 160, step: 5 },
       { key: "throughRoutePenalty", label: "Protect busy routes", min: 0, max: 3, step: 0.1 },
       { key: "accessWeight", label: "Access preference", min: 0, max: 3, step: 0.1 },
       { key: "amenityWeight", label: "Amenity preference", min: 0, max: 3, step: 0.1 },
