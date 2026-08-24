@@ -1028,14 +1028,14 @@ export const scenarios = [
     kicker: "Movement reserves the public realm",
     stage: { number: "03", label: "Territory laboratory / 03" },
     description:
-      "People make repeated trips while their continuous trajectories reinforce a fading off-grid flow network. Only repeatedly used traces mature into streets, and quiet streets degenerate again. Surviving frontage attracts bounded private parcels; sustained blocked demand can open a narrow public easement through them.",
+      "People make repeated trips while their continuous trajectories reinforce a fading off-grid flow network. Only repeatedly used traces mature into streets, and quiet streets degenerate again. Surviving frontage attracts bounded private parcels; only costly accumulated detours build crossing pressure, and a heavily used easement can mature into permanent public right-of-way.",
     steps: [
       "Reveal fading desire lines",
       "Promote only well-beaten paths",
-      "Settle beside surviving streets",
+      "Negotiate costly crossings",
     ],
     question:
-      "Before running: which paths will receive enough repeated use to survive as streets, and which will fade? Change route protection, reset with the same seed, and compare where settlement and easements emerge.",
+      "Before running: which paths will survive, and where will a detour become costly enough to justify a crossing? Change route protection, reset with the same seed, and compare where settlement and public right-of-way emerge.",
     relationMode: "none",
     matchLabel: "claimed land held in compact parcels",
     summaryMetrics: [
@@ -1139,9 +1139,14 @@ export const scenarios = [
         flowReleaseThreshold: 2,
         flowReleaseTicks: 45,
         pressurePersistence: 0.98,
-        pressureContribution: 0.18,
-        easementPressureThreshold: 16,
+        pressureDetourRatio: 1.18,
+        pressureDetourDistance: 60,
+        pressureContribution: 0.24,
+        easementPressureThreshold: 14,
         easementWidth: 15,
+        easementUsePersistence: 0.97,
+        easementAcquisitionThreshold: 15,
+        easementAcquisitionTicks: 24,
       },
     },
     params: {

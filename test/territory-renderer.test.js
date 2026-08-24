@@ -232,6 +232,7 @@ test("circulation status, trace strength, hierarchy, and congestion colors are s
   assert.equal(normalizeCirculationStatus("pending"), "reserved");
   assert.equal(normalizeCirculationStatus("road-reserved"), "reserved");
   assert.equal(normalizeCirculationStatus("public-way"), "road");
+  assert.equal(normalizeCirculationStatus("right-of-way"), "road");
   assert.equal(normalizeCirculationStatus(undefined), "road");
   assert.equal(circulationSurfaceColor("arterial"), circulationSurfaceColor("primary"));
   assert.notEqual(circulationRegionFill({ status: "trace", use: 1 }), circulationRegionFill({ status: "trace", use: 30 }));
@@ -311,6 +312,44 @@ test("continuous flow draws off-angle paths without exposing the cadastral grid"
   assert.equal(operations.some(([operation]) => operation === "strokeRect"), false);
   assert.ok(operations.some(([operation, x, y]) => operation === "moveTo" && x === 2 && y === 3));
   assert.ok(operations.some(([operation, x, y]) => operation === "lineTo" && x === 34 && y === 17));
+});
+
+test("an acquired easement renders as a solid public path rather than a private dashed crossing", () => {
+  const { context, operations } = recordingContext();
+  drawTerritoryLayers(context, {
+    circulation: {
+      enabled: true,
+      kind: "emergent-flow-network",
+      cells: [],
+      regions: [],
+      nodes: [],
+      edges: [{
+        id: "acquired-crossing",
+        x1: 10,
+        y1: 20,
+        x2: 50,
+        y2: 35,
+        width: 8,
+        hierarchy: "path",
+        status: "road",
+        use: 12,
+        easement: true,
+        acquired: true,
+      }],
+      entries: [],
+    },
+  });
+
+  assert.equal(operations.some(([operation, value]) => (
+    operation === "set:strokeStyle" && value === "rgba(238, 204, 116, 0.9)"
+  )), false);
+  assert.equal(operations.some(([operation, dash]) => (
+    operation === "setLineDash" && Array.isArray(dash) && dash.length > 0
+  )), false);
+  assert.ok(operations.some(([operation, value]) => (
+    operation === "set:strokeStyle"
+    && value === circulationRegionFill({ status: "road", hierarchy: "path", use: 12 })
+  )));
 });
 
 test("hiding tenure preserves traces and public ways without ownership decoration", () => {

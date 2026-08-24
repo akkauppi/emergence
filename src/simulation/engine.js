@@ -757,6 +757,7 @@ export class SimulationEngine {
     const landTransition = this.land?.stage(landIntents, this.tick, {
       publicCells: this.circulation?.publicLandIds?.() || [],
       publicCandidates: circulationTransition?.publicCandidates || [],
+      publicAcquisitions: circulationTransition?.publicAcquisitions || [],
     }) || null;
     if (landTransition && !landTransition.ok) {
       this.lastError = {
@@ -777,6 +778,7 @@ export class SimulationEngine {
     if (circulationTransition) {
       this.circulation.commit(circulationTransition, {
         acceptedLandIds: landTransition?.acceptedPublicLandIds || [],
+        acceptedAcquisitionLandIds: landTransition?.acceptedPublicAcquisitionLandIds || [],
       });
     }
     if (landTransition) this.land.commit(landTransition);

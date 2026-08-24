@@ -294,6 +294,7 @@ function copyCounters(counters) {
     rejected: counters.rejected,
     roadLandConflicts: counters.roadLandConflicts ?? 0,
     roadPreemptions: counters.roadPreemptions ?? 0,
+    publicAcquisitions: counters.publicAcquisitions ?? 0,
   };
 }
 
@@ -331,6 +332,7 @@ export class LandGridState {
       rejected: 0,
       roadLandConflicts: 0,
       roadPreemptions: 0,
+      publicAcquisitions: 0,
     };
     this.lastEvents = freezeArray([]);
     this.revision = 0;
@@ -408,6 +410,26 @@ export class LandGridState {
     return cell.neighborIds.some((neighborId) => owners[this.#indexById.get(neighborId)] === ownerId);
   }
 
+  #isContiguousRemoval(ownerId, index, owners = this.ownerByCell) {
+    const remaining = this.config.cells
+      .filter((cell) => cell.index !== index && owners[cell.index] === ownerId)
+      .map((cell) => cell.index);
+    if (remaining.length <= 1) return true;
+    const remainingSet = new Set(remaining);
+    const reached = new Set();
+    const pending = [remaining[0]];
+    while (pending.length > 0) {
+      const current = pending.pop();
+      if (reached.has(current)) continue;
+      reached.add(current);
+      for (const neighborId of this.config.cells[current].neighborIds) {
+        const neighborIndex = this.#indexById.get(neighborId);
+        if (remainingSet.has(neighborIndex) && !reached.has(neighborIndex)) pending.push(neighborIndex);
+      }
+    }
+    return reached.size === remaining.length;
+  }
+
   /**
    * Produce a complete next tenure state without mutating this store. Intents
    * must be parsed first and have shape `{ agentId, type, landId, bid? }`.
@@ -459,6 +481,20 @@ export class LandGridState {
       }
       publicCandidates.set(landId, Object.freeze({ ...submitted, landId, bid }));
     }
+    const publicAcquisitions = new Map();
+    for (const submitted of Array.isArray(coordination.publicAcquisitions)
+      ? coordination.publicAcquisitions
+      : []) {
+      const landId = typeof submitted?.landId === "string" ? submitted.landId : "";
+      const use = Number(submitted?.use ?? submitted?.usage ?? 0);
+      if (!landId || !Number.isFinite(use) || use < 0 || use > MAX_BID) {
+        return Object.freeze({ ok: false, error: "Public acquisitions require a landId and finite non-negative use.", events: freezeArray([]) });
+      }
+      if (publicAcquisitions.has(landId)) {
+        return Object.freeze({ ok: false, error: `Public acquisition ${landId} was submitted more than once.`, events: freezeArray([]) });
+      }
+      publicAcquisitions.set(landId, Object.freeze({ ...submitted, landId, use }));
+    }
 
     const owners = this.ownerByCell.slice();
     const reservations = this.reservedByCell.slice();
@@ -470,15 +506,43 @@ export class LandGridState {
     const events = [];
     const acceptedPublic = new Set();
     const rejectedPublic = new Set();
+    const acceptedPublicAcquisitions = new Set();
 
     if (this.config.enabled) {
+      for (const landId of [...publicAcquisitions.keys()].sort()) {
+        const index = this.#indexById.get(landId);
+        if (index === undefined || publicCells.has(landId)) continue;
+        const ownerId = owners[index];
+        if (ownerId === EMPTY || !this.#isContiguousRemoval(ownerId, index, owners)) continue;
+        owners[index] = EMPTY;
+        reservations[index] = EMPTY;
+        reservedAt[index] = EMPTY;
+        claimableAt[index] = EMPTY;
+        expiresAt[index] = EMPTY;
+        reservationBids[index] = 0;
+        acceptedPublicAcquisitions.add(landId);
+        counters.publicAcquisitions += 1;
+        events.push(frozenEvent({
+          type: "public-acquisition",
+          tick: nextTick,
+          landId,
+          ownerId,
+          use: publicAcquisitions.get(landId).use,
+        }));
+      }
+
       // A movement-derived public reservation and private tenure share one
-      // arbitration boundary. Claimed land is never expropriated. An existing
-      // private reservation remains contestable until it becomes a claim.
+      // arbitration boundary. Ordinary road growth never expropriates claimed
+      // land; only the mature, connectivity-safe acquisition path above can
+      // retire ownership. A private reservation remains contestable until it
+      // becomes a claim.
       for (const landId of [...publicCandidates.keys()].sort()) {
         const candidate = publicCandidates.get(landId);
         const index = this.#indexById.get(landId);
-        if (index === undefined || owners[index] !== EMPTY || publicCells.has(landId)) {
+        if (index === undefined
+          || owners[index] !== EMPTY
+          || publicCells.has(landId)
+          || acceptedPublicAcquisitions.has(landId)) {
           rejectedPublic.add(landId);
           continue;
         }
@@ -525,7 +589,9 @@ export class LandGridState {
         const index = this.#indexById.get(intent.landId);
         let reason = null;
         if (index === undefined) reason = "unknown-land";
-        else if (publicCells.has(intent.landId) || acceptedPublic.has(intent.landId)) reason = "public-way";
+        else if (publicCells.has(intent.landId)
+          || acceptedPublic.has(intent.landId)
+          || acceptedPublicAcquisitions.has(intent.landId)) reason = "public-way";
         else if (owners[index] !== EMPTY) reason = "already-claimed";
         else if (reservations[index] !== intent.agentId) reason = "not-reservation-owner";
         else if (currentTick < claimableAt[index]) reason = "not-mature";
@@ -552,7 +618,9 @@ export class LandGridState {
         const index = this.#indexById.get(intent.landId);
         let reason = null;
         if (index === undefined) reason = "unknown-land";
-        else if (publicCells.has(intent.landId) || acceptedPublic.has(intent.landId)) reason = "public-way";
+        else if (publicCells.has(intent.landId)
+          || acceptedPublic.has(intent.landId)
+          || acceptedPublicAcquisitions.has(intent.landId)) reason = "public-way";
         else if (owners[index] !== EMPTY) reason = "already-claimed";
         else if (reservations[index] !== EMPTY) reason = "already-reserved";
         else if (this.#hasReservation(intent.agentId, reservations)) reason = "owner-already-reserved";
@@ -672,12 +740,14 @@ export class LandGridState {
 
     const frozenEvents = freezeArray(events);
     const acceptedPublicLandIds = freezeArray([...acceptedPublic].sort());
+    const acceptedPublicAcquisitionLandIds = freezeArray([...acceptedPublicAcquisitions].sort());
     const transition = Object.freeze({
       ok: true,
       error: null,
       events: frozenEvents,
       tick: nextTick,
       acceptedPublicLandIds,
+      acceptedPublicAcquisitionLandIds,
     });
     transitionStates.set(transition, {
       source: this,
@@ -782,6 +852,7 @@ export class LandGridState {
       landRejectedActions: this.counters.rejected,
       roadLandConflicts: this.counters.roadLandConflicts,
       roadPreemptions: this.counters.roadPreemptions,
+      publicAcquisitions: this.counters.publicAcquisitions,
     });
   }
 

@@ -37,7 +37,7 @@ function landById(frame) {
 
 function publicLandIds(frame) {
   return new Set(frame.circulation.cells
-    .filter((cell) => cell.role === "road" || cell.role === "road-reserved")
+    .filter((cell) => cell.isPublic === true)
     .map((cell) => cell.id));
 }
 
@@ -48,7 +48,10 @@ function physicalAgents(frame) {
 function assertConnectedPublicNetwork(frame) {
   const cells = landById(frame);
   const publicIds = publicLandIds(frame);
-  const pending = frame.circulation.entries.map((entry) => entry.landId);
+  const pending = [
+    ...frame.circulation.entries.map((entry) => entry.landId),
+    ...frame.circulation.cells.filter((cell) => cell.acquired).map((cell) => cell.id),
+  ];
   const reached = new Set();
   while (pending.length > 0) {
     const landId = pending.pop();
@@ -61,7 +64,7 @@ function assertConnectedPublicNetwork(frame) {
   assert.equal(
     reached.size,
     publicIds.size,
-    `${publicIds.size - reached.size} public cells are disconnected from an entry seed`,
+    `${publicIds.size - reached.size} public cells are disconnected from a public anchor`,
   );
 }
 
@@ -313,6 +316,9 @@ test("a pressure easement makes claimed land permeable while ownership remains",
     circulation: {
       ...scenario.environment.circulation,
       pressurePersistence: 1,
+      pressureDetourRatio: 1.1,
+      pressureDetourDistance: 5,
+      pressureContribution: 1,
       easementPressureThreshold: 1,
     },
   };
@@ -331,8 +337,8 @@ test("a pressure easement makes claimed land permeable while ownership remains",
   const pressure = engine.circulation.stage([{
     agentId: 0,
     from: { x: cell.x - 1, y: cell.center.y },
-    to: { x: cell.x - 1, y: cell.center.y },
-    attemptedTo: { x: cell.x + 5, y: cell.center.y },
+    to: { x: cell.x - 1, y: cell.center.y - 20 },
+    pressureTo: { x: cell.x + cell.width + 20, y: cell.center.y },
   }], 2);
   engine.circulation.commit(pressure);
   assert.ok(engine.circulation.easement(landId));

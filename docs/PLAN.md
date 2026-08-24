@@ -186,17 +186,26 @@ its internal tenure index, while movement and visible paths use continuous geome
   permanent entry seeds keep the remaining network anchored.
 - Public-way and plot intents share an atomic arbitration phase. A cell cannot be both
   a cell-wide road and a private claim. A later pressure easement is a narrower overlay:
-  tenure remains, while public passage is allowed through the claimed site.
+  tenure initially remains, while public passage is allowed through the claimed site.
 - Actual movement contributes short, angle-preserving segments to a fading flow network.
   A segment needs repeated active observations above a high-use threshold before it is
   promoted from a trace to a street. An established street that remains below a lower
   threshold for long enough degenerates back to a trace. These paths are rendered from
   continuous segments, not cadastral cell centres; the cell network remains only as
   legal support and for deterministic road/plot arbitration.
-- Claimed land is a movement obstacle until counterfactual origin–destination demand
-  repeatedly crosses it. Blocked pressure retains both crossing position and angle;
-  once it passes the policy threshold, the engine records a visible easement and makes
-  that site permeable without removing ownership.
+- Claimed land is a movement obstacle. Each journey records its original direct distance,
+  distance already travelled, remaining straight-line distance, and current-step lost
+  progress. Pressure rises only after both an absolute and relative detour threshold are
+  exceeded, and only during a step that adds more travel than direct progress. The first
+  claimed cell on the still-desired line receives that pressure, including its crossing
+  position and angle. Once the pressure threshold is crossed, the site receives a narrow
+  easement and becomes permeable without immediately removing ownership.
+- Easement traffic has its own fading use memory. Sustained use can propose public
+  acquisition of the crossed cell. Land and circulation resolve that proposal atomically:
+  ownership is retired only when removing the cell leaves the owner's remaining parcel
+  connected. The permanent crossing remains an off-grid line and becomes a public anchor
+  from which local support streets may grow; it does not render the full cadastral cell as
+  an orthogonal street block.
 - The canvas distinguishes continuous traces, established paths, easements, plot
   reservations, contested cells, and claims. The unclaimed cadastral checkerboard is
   hidden in this mode so the movement geometry, rather than the storage topology,
@@ -208,8 +217,9 @@ Initial land sequence:
 2. Promote only repeatedly reinforced traces, and retire streets after sustained low use.
 3. After the warm-up, seed private parcels beside the busiest eligible frontage.
 4. Grow each parcel contiguously toward a bounded target area, balancing compactness and suitability.
-5. Accumulate pressure where direct demand meets claimed land; open an easement when pressure persists.
-6. Resolve road, plot, and easement events deterministically and expose them for inspection.
+5. Accumulate pressure only when claimed land imposes a substantial journey detour.
+6. Open a narrow easement, then acquire it as public right-of-way only after sustained use.
+7. Resolve road, plot, easement, and acquisition events deterministically and expose them for inspection.
 
 This sequence retains deterministic cell-based tenure without forcing paths to inherit
 its orthogonal shape. Remaining depth includes affordability and budget locking,
@@ -218,8 +228,29 @@ maintenance, and coupling claims to occupation or demand. A plot claim still doe
 create a building.
 
 Measurements: parcel area, frontage, compactness, ownership concentration, travel use,
-trace and street counts, promotions and degenerations, road cells and growth, network
-components, reservations, and road/plot conflicts.
+journey detour distance and ratio, trace and street counts, promotions and degenerations,
+easements and acquired rights-of-way, road cells and growth, network components,
+reservations, and road/plot conflicts.
+
+#### Modeling rationale and organic-growth directions
+
+The implemented feedbacks are intentionally local. Reinforcement plus decay follows the
+[active-walker account of pedestrian trail formation](https://arxiv.org/abs/cond-mat/9806097),
+where repeated walking can produce a shared low-detour path system. Street support expands
+beside existing use through local decisions, consistent with evidence that
+[local optimization can generate realistic planar street patterns](https://arxiv.org/abs/0708.4360).
+Ordinary edge-connected growth acts as *densification*, while a heavily used acquired
+crossing acts as a new *exploration* anchor—two recurring mechanisms identified in
+[empirical road-network evolution](https://www.nature.com/articles/srep00296).
+
+The next useful experiments should add one feedback at a time: let accessibility around
+high-use junctions attract new destinations and density, following
+[density–topology co-evolution models](https://arxiv.org/abs/0810.1376); give agents
+heterogeneous distance, direction-change, amenity, and affordability preferences; then
+test density-dependent subdivision, congestion, and street capacity. A controllable
+aggregation-versus-diffusion parameter could expose compact growth and sprawl without
+prescribing either morphology, as explored in
+[urban morphogenesis models](https://journals.plos.org/plosone/article?id=10.1371%2Fjournal.pone.0203516).
 
 ### Stage 4 — Urban growth laboratory
 
@@ -321,9 +352,12 @@ Headless engine tests should establish that:
   plus non-entry support streets deterministically degenerate after sustained low use;
 - simultaneous public-way and plot intents for one cell produce one deterministic
   winner, never dual allocation, and the result is unchanged by agent storage order;
-- every committed cell-wide public way remains connected to an entry or earlier road;
-  claimed sites remain blocked until deterministic pressure creates an easement, after
-  which traversal preserves the owner and records use through the site;
+- every committed cell-wide public way remains connected to an entry, earlier road, or
+  acquired right-of-way anchor; claimed sites remain blocked until a journey exceeds
+  deterministic detour thresholds, after which an easement preserves the owner while
+  recording use through the site;
+- sustained easement use can retire ownership only when the remaining parcel stays
+  connected, and accepted acquisitions replay as permanent off-grid public anchors;
 - for the same scenario, seed, behavior, parameters, population, and scheduled
   interventions, agents, tenure, route use, road growth, conflicts, and checksum replay
   exactly; tick chunking and agent storage order do not change the result.

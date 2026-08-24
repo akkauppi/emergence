@@ -177,7 +177,15 @@ function frameCirculation(frame = state.frame) {
 function circulationStatus(feature) {
   if (!feature) return null;
   const value = String(feature.status ?? feature.role ?? feature.state ?? feature.designation ?? "").toLowerCase();
-  if (["road", "street", "committed", "public-way", "public_way"].includes(value)) return "road";
+  if ([
+    "road",
+    "street",
+    "committed",
+    "public-way",
+    "public_way",
+    "right-of-way",
+    "right_of_way",
+  ].includes(value)) return "road";
   if (["reserved", "reservation", "pending", "road-reserved", "road_reserved"].includes(value)) return "reserved";
   if (["trace", "candidate", "used", "preferred"].includes(value)) return "trace";
   if (value === "open" && circulationUse(feature) > 0) return "trace";
@@ -217,7 +225,13 @@ function circulationLabel(frame, cell, features) {
   const feature = circulationFeatureForCell(frame, cell, features);
   if (feature?.easement === true) {
     const pressure = Number(feature.pressure);
-    return `public easement${Number.isFinite(pressure) ? ` · pressure ${Math.round(pressure)}` : ""}`;
+    const use = Number(feature.easementUse ?? feature.use);
+    if (feature.acquired === true) {
+      return `public right-of-way${Number.isFinite(use) ? ` · use ${Math.round(use)}` : ""}`;
+    }
+    return `private-land easement${Number.isFinite(pressure) ? ` · pressure ${Math.round(pressure)}` : ""}${
+      Number.isFinite(use) ? ` · use ${Math.round(use)}` : ""
+    }`;
   }
   const status = circulationStatus(feature);
   if (!status) {
@@ -408,7 +422,7 @@ function renderTerritoryInspector(frame) {
   const expiry = Number(policy.expiryTicks ?? policy.reservationExpiryTicks);
   ui.territoryPolicy.textContent = `One active plot reservation per person · highest priority wins · seeded tie-breaks${
     Number.isFinite(maturity) ? ` · matures after ${maturity} ticks` : ""
-  }${Number.isFinite(expiry) ? ` · expires after ${expiry} ticks` : ""} · only well-beaten traces establish streets · quiet streets fade · blocked demand can open an easement.`;
+  }${Number.isFinite(expiry) ? ` · expires after ${expiry} ticks` : ""} · only well-beaten traces establish streets · quiet streets fade · costly detours build pressure · heavily used easements become public right-of-way.`;
 }
 
 function boundedInteger(input, minimum, maximum, fallback) {

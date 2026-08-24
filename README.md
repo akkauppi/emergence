@@ -21,7 +21,8 @@ desire paths, public streets, and territory.
 - **Trace · reveal desire paths** — edit blocks and destination gates, then watch
   repeated journeys create a fading footfall field that influences later movement.
 - **Territory · paths become streets** — observe well-beaten continuous paths mature
-  into streets, quiet streets fade, parcels follow frontage, and pressure creates easements.
+  into streets, quiet streets fade, parcels follow frontage, and costly detours create
+  easements that sustained use can turn into public right-of-way.
 
 Useful controls include pause, single-step, same-seed reset, population, tempo,
 relationship overlays, delayed sensing, and drag-to-perturb interventions.

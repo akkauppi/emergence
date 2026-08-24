@@ -161,9 +161,14 @@ test("territory scenario couples an ordinary land grid to journeys, traces, and 
     flowReleaseThreshold: 2,
     flowReleaseTicks: 45,
     pressurePersistence: 0.98,
-    pressureContribution: 0.18,
-    easementPressureThreshold: 16,
+    pressureDetourRatio: 1.18,
+    pressureDetourDistance: 60,
+    pressureContribution: 0.24,
+    easementPressureThreshold: 14,
     easementWidth: 15,
+    easementUsePersistence: 0.97,
+    easementAcquisitionThreshold: 15,
+    easementAcquisitionTicks: 24,
   });
 });
 

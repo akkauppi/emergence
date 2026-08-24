@@ -71,6 +71,11 @@ test("circulation policy normalizes into a bounded immutable replay value", () =
     flowFormationTicks: 0,
     flowReleaseThreshold: 99,
     flowReleaseTicks: 0,
+    pressureDetourRatio: -1,
+    pressureDetourDistance: -1,
+    easementUsePersistence: 4,
+    easementAcquisitionThreshold: -1,
+    easementAcquisitionTicks: 0,
   });
 
   assert.ok(Object.isFrozen(normalized));
@@ -89,6 +94,11 @@ test("circulation policy normalizes into a bounded immutable replay value", () =
   assert.equal(normalized.flowFormationTicks, 1);
   assert.equal(normalized.flowReleaseThreshold, 4);
   assert.equal(normalized.flowReleaseTicks, 1);
+  assert.equal(normalized.pressureDetourRatio, 1);
+  assert.equal(normalized.pressureDetourDistance, 0);
+  assert.equal(normalized.easementUsePersistence, 1);
+  assert.equal(normalized.easementAcquisitionThreshold, 0.1);
+  assert.equal(normalized.easementAcquisitionTicks, 1);
   assert.equal(normalizeCirculationConfig({ enabled: false }), null);
 });
 
@@ -243,13 +253,16 @@ test("continuous traces require repeated use to become streets and fade after qu
   assert.equal(circulation.metrics().flowDegenerations, 1);
 });
 
-test("sustained blocked pressure creates an easement without removing ownership", () => {
+test("only a costly accumulated detour creates pressure and an easement", () => {
   const { land, circulation } = createStores({
     columns: 3,
     rows: 3,
     circulation: {
       pressurePersistence: 1,
-      easementPressureThreshold: 3,
+      pressureDetourRatio: 1.15,
+      pressureDetourDistance: 10,
+      pressureContribution: 1,
+      easementPressureThreshold: 2,
       easementWidth: 8,
     },
   });
@@ -262,23 +275,93 @@ test("sustained blocked pressure creates an easement without removing ownership"
   ], 1);
   land.commit(tenure);
 
-  for (let tick = 2; tick < 5; tick += 1) {
-    const transition = circulation.stage([{
-      agentId: 2,
-      from: { x: 19, y: 30 },
-      to: { x: 19, y: 30 },
-      attemptedTo: { x: 25, y: 30 },
-    }], tick);
-    circulation.commit(transition);
-  }
+  let transition = circulation.stage([{
+    agentId: 2,
+    from: { x: 10, y: 30 },
+    to: { x: 15, y: 30 },
+    pressureTo: { x: 50, y: 30 },
+  }], 2);
+  circulation.commit(transition);
+  assert.equal(circulation.cell("land-1-1").pressure, 0, "direct progress must not build pressure");
+
+  transition = circulation.stage([{
+    agentId: 2,
+    from: { x: 15, y: 30 },
+    to: { x: 15, y: 10 },
+    pressureTo: { x: 50, y: 30 },
+  }], 3);
+  circulation.commit(transition);
 
   const easement = circulation.easement("land-1-1");
   assert.ok(easement);
   assert.equal(easement.landId, "land-1-1");
   assert.ok(Math.abs(easement.y2 - easement.y1) < 0.001);
-  assert.equal(land.frame(5).cells[4].ownerId, 7);
+  assert.equal(land.frame(4).cells[4].ownerId, 7);
   assert.equal(circulation.frame().metrics.easementCount, 1);
   assert.ok(circulation.lastEvents.some((event) => event.type === "pressure-easement"));
+});
+
+test("sustained easement traffic acquires a safe parcel edge as public right-of-way", () => {
+  const { land, circulation } = createStores({
+    columns: 3,
+    rows: 3,
+    circulation: {
+      pressurePersistence: 1,
+      pressureDetourRatio: 1.15,
+      pressureDetourDistance: 10,
+      pressureContribution: 1,
+      easementPressureThreshold: 2,
+      easementUsePersistence: 1,
+      easementAcquisitionThreshold: 1,
+      easementAcquisitionTicks: 2,
+    },
+  });
+  let tenure = land.stage([
+    { agentId: 7, type: "reserve", landId: "land-1-1", bid: 1 },
+  ], 0);
+  land.commit(tenure);
+  tenure = land.stage([
+    { agentId: 7, type: "claim", landId: "land-1-1" },
+  ], 1);
+  land.commit(tenure);
+
+  let transition = circulation.stage([{
+    agentId: 2,
+    from: { x: 10, y: 30 },
+    to: { x: 10, y: 10 },
+    pressureTo: { x: 50, y: 30 },
+  }], 2);
+  circulation.commit(transition);
+  assert.ok(circulation.easement("land-1-1"));
+
+  for (let tick = 3; tick <= 4; tick += 1) {
+    transition = circulation.stage([{
+      agentId: 2,
+      from: { x: 10, y: 30 },
+      to: { x: 50, y: 30 },
+    }], tick);
+    tenure = land.stage([], tick, {
+      publicCells: circulation.publicLandIds(),
+      publicCandidates: transition.publicCandidates,
+      publicAcquisitions: transition.publicAcquisitions,
+    });
+    circulation.commit(transition, {
+      acceptedLandIds: tenure.acceptedPublicLandIds,
+      acceptedAcquisitionLandIds: tenure.acceptedPublicAcquisitionLandIds,
+    });
+    land.commit(tenure);
+  }
+
+  assert.equal(land.frame(5).cells[4].ownerId, null);
+  assert.equal(circulation.cell("land-1-1").role, "right-of-way");
+  assert.equal(circulation.cell("land-1-1").acquired, true);
+  assert.equal(circulation.isPublic("land-1-1"), true);
+  assert.equal(circulation.frame().regions.some((region) => region.landId === "land-1-1"), false);
+  assert.equal(circulation.easement("land-1-1").acquired, true);
+  assert.equal(circulation.metrics().acquiredRightOfWays, 1);
+  assert.equal(circulation.metrics().easementAcquisitions, 1);
+  assert.ok(circulation.lastEvents.some((event) => event.type === "easement-acquisition"));
+  assert.ok(land.lastEvents.some((event) => event.type === "public-acquisition"));
 });
 
 test("public reservations mature under use and release after sustained disuse", () => {

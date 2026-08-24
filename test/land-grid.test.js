@@ -233,6 +233,37 @@ test("a strong public route can preempt a reservation, but never a claim", () =>
   assert.equal(claimed.metrics().roadPreemptions, 0);
 });
 
+test("public acquisition removes a claimed parcel edge but never fragments its owner", () => {
+  const state = new LandGridState(config(), { seed: 67 });
+  let tick = 0;
+  for (const landId of ["land-1-0", "land-1-1", "land-1-2"]) {
+    tick = reserveAndClaim(state, 4, landId, tick);
+  }
+
+  const rejected = commit(state, [], tick, {
+    publicAcquisitions: [{ landId: "land-1-1", use: 12 }],
+  });
+  tick += 1;
+  assert.deepEqual(rejected.acceptedPublicAcquisitionLandIds, []);
+  assert.equal(state.frame(tick).cells[4].ownerId, 4);
+  assert.equal(state.metrics().publicAcquisitions, 0);
+
+  const accepted = commit(state, [], tick, {
+    publicAcquisitions: [{ landId: "land-1-0", use: 15 }],
+  });
+  assert.deepEqual(accepted.acceptedPublicAcquisitionLandIds, ["land-1-0"]);
+  assert.equal(state.frame(tick + 1).cells[3].ownerId, null);
+  assert.deepEqual(state.frame(tick + 1).parcels[0].cellIds, ["land-1-1", "land-1-2"]);
+  assert.equal(state.metrics().publicAcquisitions, 1);
+  assert.deepEqual(accepted.events.find((event) => event.type === "public-acquisition"), {
+    type: "public-acquisition",
+    tick: tick + 1,
+    landId: "land-1-0",
+    ownerId: 4,
+    use: 15,
+  });
+});
+
 test("established public cells reject private reservations", () => {
   const state = new LandGridState(config());
   const transition = commit(

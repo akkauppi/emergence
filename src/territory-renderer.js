@@ -67,7 +67,15 @@ export function circulationSurfaceColor(hierarchy) {
 export function normalizeCirculationStatus(value) {
   const status = String(value ?? "").toLowerCase();
   if (["reserved", "reservation", "pending", "road-reserved", "road_reserved"].includes(status)) return "reserved";
-  if (["road", "street", "committed", "public-way", "public_way"].includes(status)) return "road";
+  if ([
+    "road",
+    "street",
+    "committed",
+    "public-way",
+    "public_way",
+    "right-of-way",
+    "right_of_way",
+  ].includes(status)) return "road";
   if (["trace", "candidate", "used", "preferred"].includes(status)) return "trace";
   // Status-free regions are treated as established roads for compatibility
   // with older frames; an explicitly unknown status is only a tentative trace.
@@ -625,13 +633,14 @@ export function drawPublicRealm(context, value, { scale = 1, selectedLandId = nu
       context.lineWidth = edge.width + hairline * 2.5;
       strokeCirculationEdge(context, edge);
     }
-    context.strokeStyle = edge.easement
+    const privateEasement = edge.easement && !edge.acquired;
+    context.strokeStyle = privateEasement
       ? "rgba(238, 204, 116, 0.9)"
       : circulationRegionFill({ ...edge, use: edge.use ?? edge.load });
     context.lineWidth = edge.width;
     context.setLineDash(status === "trace"
       ? [2.5 / safeScale, 4.5 / safeScale]
-      : edge.easement
+      : privateEasement
         ? [8 / safeScale, 3 / safeScale]
         : []);
     strokeCirculationEdge(context, edge);
