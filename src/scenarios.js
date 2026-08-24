@@ -373,13 +373,7 @@ function idOf(value) {
   return value === undefined || value === null ? "" : String(value);
 }
 
-function segmentCrossesBlock(from, to, block, padding) {
-  const bounds = {
-    left: finite(block.x) - padding,
-    right: finite(block.x) + finite(block.width) + padding,
-    top: finite(block.y) - padding,
-    bottom: finite(block.y) + finite(block.height) + padding
-  };
+function clippedSegment(from, to, bounds) {
   const delta = { x: to.x - from.x, y: to.y - from.y };
   let entry = 0;
   let exit = 1;
@@ -394,9 +388,54 @@ function segmentCrossesBlock(from, to, block, padding) {
     const second = (high - from[axis]) / delta[axis];
     entry = Math.max(entry, Math.min(first, second));
     exit = Math.min(exit, Math.max(first, second));
-    if (entry > exit) return false;
+    if (entry > exit) return null;
   }
-  return exit >= 0 && entry <= 1;
+  if (exit < 0 || entry > 1) return null;
+  return {
+    from: { x: from.x + delta.x * entry, y: from.y + delta.y * entry },
+    to: { x: from.x + delta.x * exit, y: from.y + delta.y * exit }
+  };
+}
+
+function distanceToSegment(point, from, to) {
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const lengthSquared = dx * dx + dy * dy;
+  const projection = lengthSquared < 0.000001 ? 0 : clamp(
+    ((point.x - from.x) * dx + (point.y - from.y) * dy) / lengthSquared,
+    0,
+    1
+  );
+  return Math.hypot(point.x - from.x - dx * projection, point.y - from.y - dy * projection);
+}
+
+function segmentCrossesBlock(from, to, block, padding) {
+  const x = finite(block.x);
+  const y = finite(block.y);
+  const width = finite(block.width);
+  const height = finite(block.height);
+  const paddedIntersection = clippedSegment(from, to, {
+    left: x - padding,
+    right: x + width + padding,
+    top: y - padding,
+    bottom: y + height + padding
+  });
+  if (!paddedIntersection) return false;
+
+  const easement = block.easement;
+  if (!easement) return true;
+  const parcelIntersection = clippedSegment(from, to, {
+    left: x,
+    right: x + width,
+    top: y,
+    bottom: y + height
+  });
+  if (!parcelIntersection) return true;
+  const corridorFrom = { x: finite(easement.x1), y: finite(easement.y1) };
+  const corridorTo = { x: finite(easement.x2), y: finite(easement.y2) };
+  const halfWidth = Math.max(1, finite(easement.width, 2) / 2);
+  return distanceToSegment(parcelIntersection.from, corridorFrom, corridorTo) > halfWidth + 0.001 ||
+    distanceToSegment(parcelIntersection.to, corridorFrom, corridorTo) > halfWidth + 0.001;
 }
 
 function distanceToBlock(point, block) {
@@ -498,7 +537,8 @@ function preferredWaypoint(self, goal, obstacles, field, params, world) {
       continuity * 0.75 +
       trace * trailInfluence * 2.2 +
       sideAffinity -
-      (kind === "corner" ? 0.08 : 0);
+      (kind === "corner" ? 0.08 : 0) +
+      (kind === "easement" ? 0.35 : 0);
     const candidate = { point, score, rank };
     if (
       !best ||
@@ -538,6 +578,21 @@ function preferredWaypoint(self, goal, obstacles, field, params, world) {
   }
 
   if (threat) {
+    const easement = threat.easement;
+    if (easement) {
+      const mouths = [
+        { x: finite(easement.x1), y: finite(easement.y1) },
+        { x: finite(easement.x2), y: finite(easement.y2) }
+      ].sort((first, second) =>
+        Math.hypot(first.x - position.x, first.y - position.y) -
+        Math.hypot(second.x - position.x, second.y - position.y)
+      );
+      for (let index = 0; index < mouths.length; index += 1) {
+        if (Math.hypot(mouths[index].x - position.x, mouths[index].y - position.y) <= viewDepth * 1.35) {
+          consider(mouths[index], candidateCount + index, "easement");
+        }
+      }
+    }
     const cornerPadding = radius + 4;
     const corners = [
       { x: finite(threat.x) - cornerPadding, y: finite(threat.y) - cornerPadding },
@@ -1178,8 +1233,10 @@ export const scenarios = [
         easementPressureThreshold: 14,
         easementWidth: 15,
         easementUsePersistence: 0.97,
-        easementAcquisitionThreshold: 15,
-        easementAcquisitionTicks: 24,
+        easementAcquisitionThreshold: 24,
+        easementAcquisitionTicks: 36,
+        easementReleaseThreshold: 1.5,
+        easementReleaseTicks: 120,
       },
     },
     params: {

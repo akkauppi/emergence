@@ -197,7 +197,9 @@ its internal tenure index, while movement and visible paths use continuous geome
   permanent entry seeds keep the remaining network anchored.
 - Public-way and plot intents share an atomic arbitration phase. A cell cannot be both
   a cell-wide road and a private claim. A later pressure easement is a narrower overlay:
-  tenure initially remains, while public passage is allowed through the claimed site.
+  tenure initially remains, while public passage is allowed only inside the surveyed
+  centreline corridor. The remaining claimed cell stays collision-solid, and corridor
+  mouths become bounded local wayfinding affordances rather than a completed route.
 - Actual movement contributes short, angle-preserving segments to a fading flow network.
   A segment needs repeated active observations above a high-use threshold before it is
   promoted from a trace to a street. An established street that remains below a lower
@@ -225,6 +227,12 @@ its internal tenure index, while movement and visible paths use continuous geome
   crossing remains an off-grid line and becomes a public anchor from which local support
   streets may grow; it does not render the full cadastral cell as an orthogonal street
   block.
+- A provisional easement whose use falls below 1.5 for 120 ticks closes only while no
+  walker is present in its support cell. Closure clears its residual pressure so it must
+  be earned again; any renewed movement resets the quiet age. Acquired rights-of-way are
+  permanent. Because tenure is still cell-based, acquisition retires the whole support
+  cell and leaves its non-corridor remainder as open land; exact strip subdivision belongs
+  with the later non-grid parcel geometry layer.
 - The canvas distinguishes continuous traces, established paths, easements, plot
   reservations, contested cells, and claims. The unclaimed cadastral checkerboard is
   hidden in this mode so the movement geometry, rather than the storage topology,
@@ -240,8 +248,9 @@ Initial land sequence:
 4. Grow each parcel contiguously toward a bounded target area, balancing compactness and suitability.
 5. Accumulate pressure when claimed land imposes a substantial journey detour, a
    sustained hard collision, or prolonged movement inside a small spatial radius.
-6. Open a narrow easement, then acquire it after sustained use; if it cuts a parcel,
-   retain one connected side and release the rest.
+6. Open a narrow, reversible easement; close it after sustained disuse or acquire it
+   after sustained use. If acquisition cuts a parcel, retain one connected side and
+   release the rest.
 7. Resolve road, plot, easement, and acquisition events deterministically and expose them for inspection.
 
 This sequence retains deterministic cell-based tenure without forcing paths to inherit

@@ -304,7 +304,7 @@ test("dynamic land and circulation state contribute to the engine checksum", () 
   assert.notEqual(traveled.frame().checksum, untraveled.frame().checksum);
 });
 
-test("a pressure easement makes claimed land permeable while ownership remains", () => {
+test("a pressure easement opens only its narrow corridor through claimed land", () => {
   const environment = {
     ...scenario.environment,
     land: {
@@ -353,6 +353,29 @@ test("a pressure easement makes claimed land permeable while ownership remains",
 
   assert.ok(engine.agents[0].x > cell.x - walker.radius + 1);
   assert.equal(engine.land.frame(engine.tick).cells[cell.index].ownerId, 7);
+
+  const offCorridorWalker = engine.agents[0];
+  offCorridorWalker.x = cell.x - offCorridorWalker.radius - 0.1;
+  offCorridorWalker.y = cell.y + 5;
+  offCorridorWalker.vx = 80;
+  offCorridorWalker.vy = 0;
+  assert.equal(engine.step().ok, true);
+  assert.ok(
+    engine.agents[0].x <= cell.x - offCorridorWalker.radius + 0.1,
+    "private land away from the surveyed corridor must remain solid",
+  );
+
+  const corridorWalker = engine.agents[0];
+  corridorWalker.x = cell.center.x;
+  corridorWalker.y = cell.center.y;
+  corridorWalker.vx = 0;
+  corridorWalker.vy = 80;
+  assert.equal(engine.step(6).ok, true);
+  assert.ok(
+    Math.abs(engine.agents[0].y - cell.center.y) <= engine.circulation.config.easementWidth / 2 + 0.01,
+    "a walker inside an easement must meet its corridor wall",
+  );
+
 });
 
 test("engine collisions let a persistently stalled walker open a claimed cell", () => {

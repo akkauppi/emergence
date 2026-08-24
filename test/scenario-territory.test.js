@@ -174,8 +174,10 @@ test("territory scenario couples an ordinary land grid to journeys, traces, and 
     easementPressureThreshold: 14,
     easementWidth: 15,
     easementUsePersistence: 0.97,
-    easementAcquisitionThreshold: 15,
-    easementAcquisitionTicks: 24,
+    easementAcquisitionThreshold: 24,
+    easementAcquisitionTicks: 36,
+    easementReleaseThreshold: 1.5,
+    easementReleaseTicks: 120,
   });
   assert.deepEqual(
     {
@@ -251,6 +253,27 @@ test("a nearby claimed block redirects the local step without exposing a complet
     seekTargets[0].y < nearby.y ||
     seekTargets[0].y > nearby.y + nearby.height,
   );
+});
+
+test("local wayfinding recognizes the surveyed mouth of a narrow easement", () => {
+  const nearby = {
+    id: "nearby",
+    x: 132,
+    y: 285,
+    width: 90,
+    height: 80,
+    easement: {
+      x1: 132,
+      y1: 325,
+      x2: 222,
+      y2: 325,
+      width: 14,
+    },
+  };
+  const { seekTargets } = runBehavior({ cells: undefined, obstacles: [nearby] });
+
+  assert.equal(seekTargets.length, 1);
+  assert.deepEqual(seekTargets[0], { x: 150, y: 325 });
 });
 
 test("a site beside active frontage remains reservable, but a public cell does not", () => {

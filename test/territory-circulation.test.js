@@ -80,6 +80,8 @@ test("circulation policy normalizes into a bounded immutable replay value", () =
     easementUsePersistence: 4,
     easementAcquisitionThreshold: -1,
     easementAcquisitionTicks: 0,
+    easementReleaseThreshold: 99,
+    easementReleaseTicks: 0,
   });
 
   assert.ok(Object.isFrozen(normalized));
@@ -107,6 +109,8 @@ test("circulation policy normalizes into a bounded immutable replay value", () =
   assert.equal(normalized.easementUsePersistence, 1);
   assert.equal(normalized.easementAcquisitionThreshold, 0.1);
   assert.equal(normalized.easementAcquisitionTicks, 1);
+  assert.equal(normalized.easementReleaseThreshold, 0.1);
+  assert.equal(normalized.easementReleaseTicks, 1);
   assert.equal(normalizeCirculationConfig({ enabled: false }), null);
 });
 
@@ -447,6 +451,64 @@ test("sustained tiny-area oscillation pressures a parcel on the desire line", ()
   assert.equal(event.immobileTicks, 3);
 });
 
+test("an unused provisional easement closes, while presence resets its quiet age", () => {
+  const { land, circulation } = createStores({
+    columns: 3,
+    rows: 3,
+    circulation: {
+      pressurePersistence: 1,
+      pressureDetourRatio: 1,
+      pressureDetourDistance: 0,
+      pressureContribution: 1,
+      easementPressureThreshold: 1,
+      easementUsePersistence: 0,
+      easementAcquisitionThreshold: 100,
+      easementReleaseThreshold: 1,
+      easementReleaseTicks: 2,
+    },
+  });
+  let tenure = land.stage([
+    { agentId: 7, type: "reserve", landId: "land-1-1", bid: 1 },
+  ], 0);
+  land.commit(tenure);
+  tenure = land.stage([
+    { agentId: 7, type: "claim", landId: "land-1-1" },
+  ], 1);
+  land.commit(tenure);
+
+  let transition = circulation.stage([{
+    agentId: 2,
+    from: { x: 10, y: 30 },
+    to: { x: 10, y: 40 },
+    pressureTo: { x: 50, y: 30 },
+  }], 2);
+  circulation.commit(transition);
+  assert.ok(circulation.easement("land-1-1"));
+
+  transition = circulation.stage([], 3);
+  circulation.commit(transition);
+  assert.equal(circulation.cell("land-1-1").easementQuietTicks, 1);
+
+  transition = circulation.stage([{
+    agentId: 2,
+    from: { x: 30, y: 30 },
+    to: { x: 30, y: 30 },
+  }], 4);
+  circulation.commit(transition);
+  assert.equal(circulation.cell("land-1-1").easementQuietTicks, 0);
+
+  transition = circulation.stage([], 5);
+  circulation.commit(transition);
+  assert.ok(circulation.easement("land-1-1"));
+  transition = circulation.stage([], 6);
+  circulation.commit(transition);
+  assert.equal(circulation.easement("land-1-1"), null);
+  assert.equal(circulation.metrics().easementReleases, 1);
+  assert.ok(circulation.lastEvents.some(
+    (entry) => entry.type === "easement-release" && entry.reason === "low-use",
+  ));
+});
+
 test("an acquired easement can sever a parcel and release its smaller side", () => {
   const { land, circulation } = createStores({
     columns: 3,
@@ -528,9 +590,11 @@ test("sustained easement traffic acquires a safe parcel edge as public right-of-
       pressureDetourDistance: 10,
       pressureContribution: 1,
       easementPressureThreshold: 2,
-      easementUsePersistence: 1,
+      easementUsePersistence: 0,
       easementAcquisitionThreshold: 1,
       easementAcquisitionTicks: 2,
+      easementReleaseThreshold: 1,
+      easementReleaseTicks: 1,
     },
   });
   let tenure = land.stage([
@@ -579,6 +643,11 @@ test("sustained easement traffic acquires a safe parcel edge as public right-of-
   assert.equal(circulation.metrics().easementAcquisitions, 1);
   assert.ok(circulation.lastEvents.some((event) => event.type === "easement-acquisition"));
   assert.ok(land.lastEvents.some((event) => event.type === "public-acquisition"));
+
+  transition = circulation.stage([], 5);
+  circulation.commit(transition);
+  assert.ok(circulation.easement("land-1-1"));
+  assert.equal(circulation.metrics().easementReleases, 0);
 });
 
 test("public reservations mature under use and release after sustained disuse", () => {

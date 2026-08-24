@@ -71,6 +71,11 @@ export function normalizeCirculationConfig(input) {
   );
   const flowResolution = clamp(finiteOr(input.flowResolution, 18), 6, 80);
   const pressureContribution = clamp(finiteOr(input.pressureContribution, 0.2), 0.001, 100);
+  const easementAcquisitionThreshold = clamp(
+    finiteOr(input.easementAcquisitionThreshold, 20),
+    0.1,
+    1_000_000,
+  );
   return Object.freeze({
     enabled: true,
     sourceLayer: String(input.sourceLayer ?? input.source?.layer ?? "land"),
@@ -116,12 +121,14 @@ export function normalizeCirculationConfig(input) {
       100,
     ),
     easementUsePersistence: clamp(finiteOr(input.easementUsePersistence, 0.97), 0, 1),
-    easementAcquisitionThreshold: clamp(
-      finiteOr(input.easementAcquisitionThreshold, 20),
-      0.1,
-      1_000_000,
+    easementAcquisitionThreshold,
+    easementReleaseThreshold: clamp(
+      finiteOr(input.easementReleaseThreshold, easementAcquisitionThreshold * 0.1),
+      0,
+      easementAcquisitionThreshold,
     ),
     easementAcquisitionTicks: integerIn(input.easementAcquisitionTicks, 15, 1, 1_000_000),
+    easementReleaseTicks: integerIn(input.easementReleaseTicks, 120, 1, 1_000_000),
   });
 }
 
@@ -144,6 +151,7 @@ function segmentIntervalInRectangle(from, to, rectangle) {
     maximum = Math.min(maximum, Math.max(first, second));
     if (maximum < minimum + EPSILON) return null;
   }
+  if (Math.hypot(dx, dy) <= EPSILON) return { minimum: 0, maximum: 0 };
   return maximum - minimum > EPSILON ? { minimum, maximum } : null;
 }
 
@@ -254,6 +262,7 @@ export class PublicCirculation {
     this.easementByCell = new Uint8Array(count);
     this.easementUseByCell = new Float64Array(count);
     this.easementFormationByCell = new Int32Array(count);
+    this.easementQuietByCell = new Int32Array(count);
     this.acquiredByCell = new Uint8Array(count);
     this.flowSegments = new Map();
     this.journeyByAgent = new Map();
@@ -265,6 +274,7 @@ export class PublicCirculation {
       flowPromotions: 0,
       flowDegenerations: 0,
       easementAcquisitions: 0,
+      easementReleases: 0,
     };
     this.revision = 0;
     this.lastEvents = freezeArray([]);
@@ -343,6 +353,7 @@ export class PublicCirculation {
       pressure: this.pressureByCell[cell.index],
       easement: Boolean(this.easementByCell[cell.index]),
       easementUse: this.easementUseByCell[cell.index],
+      easementQuietTicks: this.easementQuietByCell[cell.index],
       acquired: Boolean(this.acquiredByCell[cell.index]),
     })));
     this.#viewCache = { revision: this.revision, landRevision, cells: observed };
@@ -906,9 +917,13 @@ export class PublicCirculation {
     const flow = this.#stageFlow(canonical, nextTick);
 
     const loads = new Float64Array(this.cells.length);
+    const easementPresence = new Uint8Array(this.cells.length);
     for (const segment of canonical) {
-      if (Math.hypot(segment.to.x - segment.from.x, segment.to.y - segment.from.y) <= EPSILON) continue;
-      for (const index of this.#segmentCells(segment.from, segment.to)) loads[index] += 1;
+      const movement = Math.hypot(segment.to.x - segment.from.x, segment.to.y - segment.from.y);
+      for (const index of this.#segmentCells(segment.from, segment.to)) {
+        easementPresence[index] = 1;
+        if (movement > EPSILON) loads[index] += 1;
+      }
     }
     const uses = new Float64Array(this.cells.length);
     for (let index = 0; index < uses.length; index += 1) {
@@ -936,7 +951,27 @@ export class PublicCirculation {
     const easements = this.easementByCell.slice();
     const easementUses = new Float64Array(this.easementUseByCell.length);
     const easementFormation = this.easementFormationByCell.slice();
+    const easementQuiet = this.easementQuietByCell.slice();
     const acquired = this.acquiredByCell.slice();
+    const closeEasement = (index, reason) => {
+      if (!easements[index] || acquired[index]) return;
+      easements[index] = 0;
+      easementUses[index] = 0;
+      easementFormation[index] = 0;
+      easementQuiet[index] = 0;
+      pressures[index] = 0;
+      pressureAxisX[index] = 0;
+      pressureAxisY[index] = 0;
+      pressurePointX[index] = 0;
+      pressurePointY[index] = 0;
+      counters.easementReleases += 1;
+      events.push(Object.freeze({
+        type: "easement-release",
+        tick: nextTick,
+        landId: this.cells[index].id,
+        reason,
+      }));
+    };
     for (let index = 0; index < pressures.length; index += 1) {
       // Once acquired, preserve the surveyed crossing geometry. Pressure can
       // fade on private land, but a public right-of-way must not slowly rotate
@@ -949,13 +984,27 @@ export class PublicCirculation {
       pressurePointY[index] = this.pressurePointYByCell[index] * pressurePersistence;
       easementUses[index] = this.easementUseByCell[index] * this.config.easementUsePersistence
         + (easements[index] ? loads[index] : 0);
-      if (!easements[index] || acquired[index] || !this.#isClaimed(index)) {
+      if (!easements[index]) {
         easementFormation[index] = 0;
+        easementQuiet[index] = 0;
+      } else if (acquired[index]) {
+        easementFormation[index] = 0;
+        easementQuiet[index] = 0;
+      } else if (!this.#isClaimed(index)) {
+        closeEasement(index, "tenure-ended");
       } else {
         easementFormation[index] = easementUses[index] >= this.config.easementAcquisitionThreshold
           && loads[index] > 0
           ? Math.min(this.config.easementAcquisitionTicks, easementFormation[index] + 1)
           : Math.max(0, easementFormation[index] - 1);
+        easementQuiet[index] = easementUses[index] < this.config.easementReleaseThreshold
+          && loads[index] === 0
+          && easementPresence[index] === 0
+          ? Math.min(this.config.easementReleaseTicks, easementQuiet[index] + 1)
+          : 0;
+        if (easementQuiet[index] >= this.config.easementReleaseTicks) {
+          closeEasement(index, "low-use");
+        }
       }
     }
     for (const segment of canonical) {
@@ -1033,6 +1082,7 @@ export class PublicCirculation {
       pressurePointY[blockedIndex] += (segment.from.y + dy * projection) * contribution;
       if (pressures[blockedIndex] < this.config.easementPressureThreshold) continue;
       easements[blockedIndex] = 1;
+      easementQuiet[blockedIndex] = 0;
       const collisionCause = collisionFrustration >= this.config.pressureStallTicks;
       const immobilityCause = !collisionCause
         && immobilityFrustration >= this.config.pressureStallTicks;
@@ -1173,6 +1223,7 @@ export class PublicCirculation {
       easements,
       easementUses,
       easementFormation,
+      easementQuiet,
       acquired,
       publicAcquisitions: new Map(publicAcquisitions.map((candidate) => [candidate.landId, candidate])),
       candidates: new Map(candidates.map((candidate) => [candidate.landId, candidate])),
@@ -1208,6 +1259,7 @@ export class PublicCirculation {
       next.acquired[index] = 1;
       next.easements[index] = 1;
       next.easementFormation[index] = 0;
+      next.easementQuiet[index] = 0;
       next.counters.easementAcquisitions += 1;
       events.push(Object.freeze({
         type: "easement-acquisition",
@@ -1282,6 +1334,7 @@ export class PublicCirculation {
     this.easementByCell = next.easements;
     this.easementUseByCell = next.easementUses;
     this.easementFormationByCell = next.easementFormation;
+    this.easementQuietByCell = next.easementQuiet;
     this.acquiredByCell = next.acquired;
     this.counters = next.counters;
     this.lastEvents = freezeArray(events);
@@ -1372,6 +1425,7 @@ export class PublicCirculation {
       easementCount,
       acquiredRightOfWays,
       easementAcquisitions: this.counters.easementAcquisitions,
+      easementReleases: this.counters.easementReleases,
       activeJourneys: journeys.length,
       blockedAgents: blockedJourneys.length,
       immobileAgents: immobileJourneys.length,
@@ -1532,6 +1586,7 @@ export class PublicCirculation {
       easementByCell: this.easementByCell.slice(),
       easementUseByCell: this.easementUseByCell.slice(),
       easementFormationByCell: this.easementFormationByCell.slice(),
+      easementQuietByCell: this.easementQuietByCell.slice(),
       acquiredByCell: this.acquiredByCell.slice(),
       journeys: freezeArray([...this.journeyByAgent.entries()]
         .sort((first, second) => first[0] - second[0])

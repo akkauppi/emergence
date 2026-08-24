@@ -197,6 +197,29 @@ deadlock regression but also a substantial increase in crossings; the count and 
 permeability should be treated as calibration signals rather than assumed improvements.
 An independent candidate replay matched the tick-2000 checksum `581faf8a` exactly.
 
+### Narrow, reversible easement follow-up
+
+The mobility-anchor run still contained a geometric mismatch: a 15-unit easement was
+drawn through a 40-unit cadastral cell, but collision treated the complete claimed cell
+as permeable. The revised resolver keeps the claimed rectangle solid outside the
+surveyed centreline envelope. Local wayfinding can recognize either corridor mouth and
+cross only when its candidate segment remains within the strip; lateral drift meets a
+corridor wall.
+
+Provisional crossings now have a quiet age as well as fading use. Use below 1.5 for 120
+ticks closes a crossing only if no walker occupies its support cell, and renewed use
+resets that age. Closure clears the old pressure geometry. Acquisition is deliberately
+slower at 24 use for 36 active ticks and remains permanent. The current tenure grid still
+retires the whole acquired support cell, so its non-corridor remainder becomes open land;
+representing separate corridor and residual ownership requires the later polygonal
+parcel layer.
+
+In the seed-2026 reference run, stuck counts at ticks 1000, 1500, 2000, and 2400 were
+1, 1, 0, and 3 using the same 25-units-over-200-ticks probe. At tick 2400 the run had
+325 completed trips, 45 active easements (34 acquired and 11 provisional), and 35 prior
+provisional releases. These are healthier than a permanently accumulating overlay, but
+the crossing count remains a calibration signal for the later activity-demand loop.
+
 ## Acceptance and falsification
 
 The bounded-view slice is useful if, across several fixed seeds:

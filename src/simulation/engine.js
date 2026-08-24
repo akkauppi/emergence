@@ -145,6 +145,85 @@ function resolveCircleAgainstRectangle(position, velocity, radius, rectangle) {
   };
 }
 
+function easementProjection(point, easement, extension = 0) {
+  const dx = finiteOr(easement?.x2) - finiteOr(easement?.x1);
+  const dy = finiteOr(easement?.y2) - finiteOr(easement?.y1);
+  const length = Math.hypot(dx, dy);
+  if (length <= EPSILON) {
+    const x = finiteOr(easement?.x1);
+    const y = finiteOr(easement?.y1);
+    return { x, y, distance: Math.hypot(point.x - x, point.y - y), unitX: 1, unitY: 0 };
+  }
+  const unitX = dx / length;
+  const unitY = dy / length;
+  const startX = finiteOr(easement.x1) - unitX * extension;
+  const startY = finiteOr(easement.y1) - unitY * extension;
+  const extendedLength = length + extension * 2;
+  const distanceAlong = clamp(
+    (point.x - startX) * unitX + (point.y - startY) * unitY,
+    0,
+    extendedLength,
+  );
+  const x = startX + unitX * distanceAlong;
+  const y = startY + unitY * distanceAlong;
+  return {
+    x,
+    y,
+    distance: Math.hypot(point.x - x, point.y - y),
+    unitX,
+    unitY,
+  };
+}
+
+function resolveCircleAgainstPrivateObstacle(previous, position, velocity, radius, rectangle) {
+  if (!rectangle.easement) {
+    return resolveCircleAgainstRectangle(position, velocity, radius, rectangle);
+  }
+  const solidCollision = resolveCircleAgainstRectangle(position, velocity, radius, rectangle);
+  if (!solidCollision.collided) return solidCollision;
+
+  // Easement width is the legal centreline envelope for walkers. Extending
+  // the surveyed segment by one body radius lets a circle enter cleanly at a
+  // parcel boundary without making the rest of that boundary permeable.
+  const halfWidth = Math.max(1, finiteOr(rectangle.easement.width, 1) / 2);
+  const extension = radius + halfWidth + 1;
+  const currentProjection = easementProjection(position, rectangle.easement, extension);
+  if (currentProjection.distance <= halfWidth + EPSILON) {
+    return { position, velocity, collided: false };
+  }
+
+  const previousProjection = easementProjection(previous, rectangle.easement, extension);
+  if (previousProjection.distance > halfWidth + EPSILON) return solidCollision;
+
+  // A walker already inside the right-of-way meets the corridor edge rather
+  // than being expelled to the parcel's outer face when steering drifts.
+  let normalX = position.x - currentProjection.x;
+  let normalY = position.y - currentProjection.y;
+  const normalLength = Math.hypot(normalX, normalY);
+  if (normalLength <= EPSILON) {
+    normalX = -currentProjection.unitY;
+    normalY = currentProjection.unitX;
+  } else {
+    normalX /= normalLength;
+    normalY /= normalLength;
+  }
+  const resolvedPosition = {
+    x: currentProjection.x + normalX * halfWidth,
+    y: currentProjection.y + normalY * halfWidth,
+  };
+  const normalSpeed = velocity.x * normalX + velocity.y * normalY;
+  return {
+    position: resolvedPosition,
+    velocity: normalSpeed <= 0
+      ? velocity
+      : {
+        x: velocity.x - normalX * normalSpeed * 1.3,
+        y: velocity.y - normalY * normalSpeed * 1.3,
+      },
+    collided: true,
+  };
+}
+
 function chooseOther(seed, agentId, population, key, excluded = new Set()) {
   if (population <= excluded.size) return agentId;
   let candidate = randomInteger(seed, 0, population, agentId, key);
@@ -353,7 +432,7 @@ export class SimulationEngine {
   #movementObstacles() {
     const authored = this.environment?.obstacles || [];
     if (!this.land) return authored;
-    const privateCells = this.land.config.cells
+    const landObstacles = this.land.config.cells
       .filter((cell) => this.land.ownerByCell[cell.index] !== -1)
       .map((cell) => Object.freeze({
         id: `private:${cell.id}`,
@@ -365,7 +444,7 @@ export class SimulationEngine {
         landId: cell.id,
         easement: this.circulation?.easement(cell.id) ?? null,
       }));
-    return Object.freeze([...authored, ...privateCells]);
+    return Object.freeze([...authored, ...landObstacles]);
   }
 
   #occupiedLandIds(agents) {
@@ -605,7 +684,7 @@ export class SimulationEngine {
     // reservations stay traversable, preserving the road-versus-plot conflict
     // until either use actually wins public status or tenure becomes a claim.
     const collisionObstacles = this.#movementObstacles();
-    const obstacles = Object.freeze(collisionObstacles.filter((obstacle) => !obstacle.easement));
+    const obstacles = collisionObstacles;
     const fieldApi = this.field?.api || Object.freeze({
       enabled: false,
       cols: 0,
@@ -746,13 +825,15 @@ export class SimulationEngine {
 
       let strongestLandCorrection = 0;
       for (const obstacle of collisionObstacles) {
-        // A pressure-created easement makes this cadastral cell permeable.
-        // The frame retains the narrower observed crossing as its visible
-        // right-of-way while movement is no longer resolved as a hard wall.
-        if (obstacle.easement) continue;
         const beforeX = x;
         const beforeY = y;
-        const collision = resolveCircleAgainstRectangle({ x, y }, velocity, radius, obstacle);
+        const collision = resolveCircleAgainstPrivateObstacle(
+          { x: agent.x, y: agent.y },
+          { x, y },
+          velocity,
+          radius,
+          obstacle,
+        );
         x = collision.position.x;
         y = collision.position.y;
         velocity = collision.velocity;
@@ -853,8 +934,13 @@ export class SimulationEngine {
     let target = clampWorldPoint({ x, y }, agent.radius, this.width, this.height);
     let targetVelocity = { x: agent.vx, y: agent.vy };
     for (const obstacle of this.#movementObstacles()) {
-      if (obstacle.easement) continue;
-      const collision = resolveCircleAgainstRectangle(target, targetVelocity, agent.radius, obstacle);
+      const collision = resolveCircleAgainstPrivateObstacle(
+        { x: agent.x, y: agent.y },
+        target,
+        targetVelocity,
+        agent.radius,
+        obstacle,
+      );
       target = collision.position;
       targetVelocity = collision.velocity;
     }
