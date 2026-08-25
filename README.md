@@ -46,12 +46,19 @@ npm test          # run deterministic simulation tests
 npm run build     # write the deployable site to dist/
 npm run check     # test and build
 npm run evaluate:territory  # run the four-seed, 2400-tick Territory probe
+npm run diagnose:territory  # classify late-stuck journeys at four checkpoints
 ```
 
 The evaluator accepts `--scenario street-hierarchy`, `--seeds`, `--ticks`,
 `--window`, `--distance`, `--population`, and `--json`. Its default stuck-walker probe
 means no completed trip and less than 25 world units of displacement during the final
 200 ticks.
+
+The deadlock atlas uses that same definition at ticks 1000, 1500, 2000, and 2400,
+then separates endpoint displacement from the path actually traveled. Add `--details`
+for per-agent evidence, `--json` for structured output, or `--svg-dir <path>` for
+standalone map overlays. Its parcel, collision, oscillation, crowding, target, and
+easement labels are diagnostic signals rather than claims of causal proof.
 
 The server listens on the LAN by default. Use `HOST=127.0.0.1 npm run dev` to keep
 it local, or set `PORT=8080` to use another port.

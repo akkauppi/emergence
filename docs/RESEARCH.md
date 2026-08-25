@@ -335,6 +335,71 @@ the small established network and performs one lookup per candidate. The optimiz
 preserved seed 104's tick-720 checksum (`01ce0d37`) and all reported metrics exactly;
 a clean cross-machine runtime benchmark remains a follow-up rather than a claim here.
 
+## Late-deadlock atlas
+
+`npm run diagnose:territory` now follows the evaluator's four fixed seeds through ticks
+1000, 1500, 2000, and 2400. At each checkpoint it retains the preceding 200 ticks and
+uses the same endpoint rule—no arrival and less than 25 units of displacement—but also
+measures actual path length, turning, bounding area, destination changes, crowding,
+journey immobility, reported collision cells, and the final parcel/easement geometry.
+`--details` prints the evidence, `--json` exposes it as deterministic data, and
+`--svg-dir <path>` renders recent stuck trajectories, targets, parcels, streets, and
+easements as standalone SVGs. The labels are deliberately heuristic. Engine checksums
+at all sixteen checkpoints remained unchanged, so observation did not alter behavior.
+
+The fixed suite produced:
+
+| Atlas observation | Result |
+| --- | ---: |
+| Endpoint-stuck observations across 16 windows | 82 |
+| Distinct seed/agent pairs | 70 |
+| Pairs seen at more than one checkpoint | 9 |
+| Primary nearby blocked-line classifications | 48 |
+| Primary parcel-corner oscillations | 19 |
+| Primary repeated parcel-face collisions | 9 |
+| Primary wider looping detours | 3 |
+| Primary off-corridor private-land endpoints | 2 |
+| Primary destination resets | 1 |
+
+Most observations are episodes rather than permanent immobilization: only nine
+seed/agent pairs repeat at another checkpoint. Seed 613 agent 12 is the exception at all
+four checkpoints, and seed 2026 agent 13 repeats at the final three. No activity-frontage
+case became the primary classification, which reinforces the earlier finding that local
+demand changes morphology but its entrance targets are not the dominant defect.
+
+The more important result is geometric. Seventy-eight stuck observations have an
+unresolved claimed cell within the behavior's roughly 90-unit local view. Forty-eight
+of those cells already have an easement, but the current journey does not fit its narrow
+corridor. Thirty have no easement; only five of those are at least 75% of opening
+pressure, and their mean pressure is 31% of the threshold. Code inspection explains the
+first group: pressure selection currently excludes any cell with an easement before it
+checks whether that easement aligns with the attempted crossing, while collision and
+wayfinding correctly treat only the corridor itself as permeable. One crossing can
+therefore make the rest of a parcel cell permanently invisible to later pressure from
+another direction.
+
+The atlas also distinguishes legal travel through a claimed cadastral cell from being
+buried in its solid area. Seven initial apparent cases were legal easement occupancy.
+The two real final-window cases are both seed 613 at tick 2400: agent 29 enters an
+already-claimed cell at tick 2206, while agent 48 leaves an easement corridor into the
+solid part of the same cell at tick 2274. Neither is a parcel being claimed around its
+occupant. These are containment defects, not evidence for weakening reservation policy.
+
+The next changes should remain separate, testable slices:
+
+1. Fix corridor containment at easement mouths and claimed-cell boundaries, with
+   regressions for entering private land from outside and drifting out of a corridor.
+2. Compare an alignment-aware directional easement model. A claimed cell should be
+   skipped only when the attempted crossing fits an existing corridor; sustained
+   off-axis pressure may create a second independently used and decaying corridor rather
+   than rotating away the first one.
+3. If the unopened tail remains, add an agent frustration measure based on failure to
+   improve its best remaining target distance. The current 18-unit mobility anchor can
+   reset during a tight corner loop even when the walker makes no journey progress.
+
+This order repairs a physical invariant first, tests one geometric feedback second, and
+changes pressure memory only if the resulting evidence still calls for it.
+
 ## Acceptance and falsification
 
 The coupled Territory slice is useful if, across several fixed seeds:
@@ -359,9 +424,8 @@ or the outcome depends on adding further unrelated rules.
 
 ## Ordered follow-ups
 
-1. Diagnose the remaining four-to-eight late-stuck Territory journeys using the fixed
-   suite. Classify parcel-face stalls, local oscillation, and genuinely disconnected
-   demand before changing pressure or permeability again.
+1. Repair the two demonstrated private-land containment paths, then compare an
+   alignment-aware directional/multiple-easement slice against the fixed atlas.
 2. Compare Street Hierarchy against the same-seed control at additional checkpoints and
    benchmark its optimized lookup. Revise it if higher throughput depends on one trunk,
    if the seed-613 tail repeats broadly, or if capacity differences remain visually weak.
