@@ -115,7 +115,7 @@ test("territory scenario couples an ordinary land grid to journeys, traces, and 
   assert.equal(scenario.trend.key, "claimedShare");
   assert.equal(typeof compileBehavior(scenario.source), "function");
 
-  const { land, destinations, journeys, field, circulation } = scenario.environment;
+  const { land, destinations, journeys, field, circulation, activity } = scenario.environment;
   assert.deepEqual(
     {
       origin: land.origin,
@@ -178,6 +178,16 @@ test("territory scenario couples an ordinary land grid to journeys, traces, and 
     easementAcquisitionTicks: 36,
     easementReleaseThreshold: 1.5,
     easementReleaseTicks: 120,
+  });
+  assert.deepEqual(activity, {
+    enabled: true,
+    startTick: 480,
+    maturationTicks: 120,
+    frontageLossTicks: 90,
+    minimumParcelCells: 2,
+    maximumActivities: 8,
+    radius: 10,
+    accessOffset: 10,
   });
   assert.deepEqual(
     {

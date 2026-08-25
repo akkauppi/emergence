@@ -8,7 +8,7 @@ The recurring classroom loop is:
 
 > **Predict → run → measure → change one rule → rerun with the same seed → explain.**
 
-The long-term destination is an extensible agent-based urban morphology laboratory. Moving people are the first domain. Persistent traces, land tenure, and the first movement-grown circulation network are implemented; buildings, occupation, and subdivision remain independent later world layers.
+The long-term destination is an extensible agent-based urban morphology laboratory. Moving people are the first domain. Persistent traces, land tenure, the first movement-grown circulation network, and a first abstract parcel-activity demand layer are implemented; buildings, explicit occupation, and subdivision remain independent later world layers.
 
 ## 2. Translation of the physical experiment
 
@@ -103,10 +103,14 @@ collected before the tenure store changes. The same boundary can later add valid
 `emitField`, `build`, and `connect` intents.
 
 When a journey environment is enabled, `destination` identifies the agent's current
-goal, `destinations` exposes the read-only weighted gate set, `obstacles` describes
+goal, `destinations` exposes the read-only weighted set of authored gates and any
+engine-generated parcel activities, `obstacles` describes
 read-only rectangular constraints, and the field API exposes normalized `sample(point)`
 and `gradient(point, step)` queries. On arrival, the engine counts a trip and chooses a
-different gate by relative likelihood using a seeded draw. Footfall deposition, decay,
+different eligible place by relative likelihood using a seeded draw. A local activity
+visit must next return to an authored regional gate, preventing unconstrained chains of
+parcel-to-parcel demand from replacing the movement pattern that created the parcels.
+Footfall deposition, decay,
 field diffusion, obstacle collision, and journey reassignment remain engine-owned
 mechanics; student code chooses only its steering acceleration.
 
@@ -233,8 +237,23 @@ its internal tenure index, while movement and visible paths use continuous geome
   permanent. Because tenure is still cell-based, acquisition retires the whole support
   cell and leaves its non-corridor remainder as open land; exact strip subdivision belongs
   with the later non-grid parcel geometry layer.
+- The first activity-demand layer remains deliberately abstract: a claimed parcel does
+  not create a building or prove that anybody occupies it. From tick 480 onward, a parcel
+  that has survived for 120 observations, contains at least two cells, and touches the
+  current public network may create one frontage destination. A type-specific minimum
+  can delay larger markets or workshops further.
+- At most eight parcel activities are active. The first cohort balances homes, markets,
+  workshops, wells, and greens before repeating a purpose according to its frequency.
+  Relative destination weights represent different trip demand, while assignment,
+  capacity ordering, and tie-breaking remain seeded and independent of storage order.
+- An activity entrance is placed ten units outside the claimed cell on its busiest
+  eligible public edge, and remains on that edge while the frontage survives. Loss of
+  tenure closes it immediately; loss of public frontage receives a 90-tick grace period
+  before closure. Authored gates remain separate editable layout data, while both layers
+  form the frozen journey choice set and participate in replay checksums.
 - The canvas distinguishes continuous traces, established paths, easements, plot
-  reservations, contested cells, and claims. The unclaimed cadastral checkerboard is
+  reservations, contested cells, claims, and small diamond activity markers. The
+  unclaimed cadastral checkerboard is
   hidden in this mode so the movement geometry, rather than the storage topology,
   determines the composition.
 
@@ -251,18 +270,22 @@ Initial land sequence:
 6. Open a narrow, reversible easement; close it after sustained disuse or acquire it
    after sustained use. If acquisition cuts a parcel, retain one connected side and
    release the rest.
-7. Resolve road, plot, easement, and acquisition events deterministically and expose them for inspection.
+7. Let a bounded set of mature, publicly fronted parcels create purpose-specific journey
+   destinations, then feed those local trips back into traces, streets, and pressure.
+8. Resolve road, plot, easement, activity, and acquisition events deterministically and
+   expose them for inspection.
 
 This sequence retains deterministic cell-based tenure without forcing paths to inherit
 its orthogonal shape. Remaining depth includes affordability and budget locking,
 voluntary release and subdivision, non-grid parcel geometry, easement compensation,
-capacity and maintenance, and coupling claims to occupation or demand. A plot claim
-still does not create a building.
+capacity and maintenance, explicit households and jobs, activity entry/exit decisions,
+and buildings. A plot claim or abstract activity still does not create a building.
 
 Measurements: parcel area, frontage, compactness, ownership concentration, travel use,
 journey detour distance and ratio, trace and street counts, promotions and degenerations,
 easements and acquired rights-of-way, road cells and growth, network components,
-reservations, occupancy rejections, parcel severances, and road/plot conflicts.
+reservations, occupancy rejections, parcel severances, active activities, local visits,
+and road/plot conflicts.
 
 #### Modeling rationale and organic-growth directions
 

@@ -1111,14 +1111,15 @@ export const scenarios = [
     kicker: "Movement reserves the public realm",
     stage: { number: "03", label: "Territory laboratory / 03" },
     description:
-      "People keep a rough destination bearing but choose each step from a bounded forward view, adapting to nearby traces and obstacles. Their continuous trajectories reinforce a fading off-grid flow network: only repeatedly used traces mature into streets, clear low-traffic sites beside surviving frontage become parcels, and costly detours or prolonged blockage can create crossings that eventually sever private land.",
+      "People keep a rough destination bearing but choose each step from a bounded forward view, adapting to nearby traces and obstacles. Their continuous trajectories reinforce a fading off-grid flow network: repeated traces mature into streets, clear frontage becomes parcels, mature parcels generate local activities and trips, and costly blockage can create crossings through private land.",
     steps: [
       "Adapt locally within a forward view",
       "Promote only well-beaten paths",
       "Negotiate costly crossings",
+      "Let mature frontage create new trips",
     ],
     question:
-      "Before running: will a narrower forward view create more branches, or merely longer trips? Change forward view, reset with the same seed, and compare surviving paths, settlement, and public crossings.",
+      "Before running: where will the first local activities appear, and will their trips sustain branches or create new pressure crossings? Change forward view, reset with the same seed, and compare paths, settlement, activities, and public crossings.",
     relationMode: "none",
     matchLabel: "claimed land held in compact parcels",
     summaryMetrics: [
@@ -1237,6 +1238,16 @@ export const scenarios = [
         easementAcquisitionTicks: 36,
         easementReleaseThreshold: 1.5,
         easementReleaseTicks: 120,
+      },
+      activity: {
+        enabled: true,
+        startTick: 480,
+        maturationTicks: 120,
+        frontageLossTicks: 90,
+        minimumParcelCells: 2,
+        maximumActivities: 8,
+        radius: 10,
+        accessOffset: 10,
       },
     },
     params: {

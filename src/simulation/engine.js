@@ -3,6 +3,7 @@ import { clampWorldPoint, equilateralApex, nearestEquilateralApex } from "./geom
 import { ScalarField } from "./scalar-field.js";
 import { LandGridState, normalizeLandConfig, parseLandIntent } from "./land-grid.js";
 import { PublicCirculation, normalizeCirculationConfig } from "./public-circulation.js";
+import { ParcelActivityDemand, normalizeParcelActivityConfig } from "./parcel-activity.js";
 
 const DEFAULT_WIDTH = 1_000;
 const DEFAULT_HEIGHT = 650;
@@ -95,8 +96,9 @@ function normalizeEnvironment(environment, worldWidth, worldHeight) {
 
   const land = normalizeLandConfig(environment.land, worldWidth, worldHeight);
   const circulation = normalizeCirculationConfig(environment.circulation);
+  const activity = normalizeParcelActivityConfig(environment.activity ?? environment.activities);
 
-  return Object.freeze({ destinations, obstacles, journeys, field, land, circulation });
+  return Object.freeze({ destinations, obstacles, journeys, field, land, circulation, activity });
 }
 
 function resolveCircleAgainstRectangle(position, velocity, radius, rectangle) {
@@ -310,6 +312,17 @@ export class SimulationEngine {
         worldHeight: this.height,
       })
       : null;
+    this.activity = this.environment?.activity && this.land && this.circulation
+      ? new ParcelActivityDemand(this.environment.activity, {
+        land: this.land,
+        circulation: this.circulation,
+        seed: this.seed,
+        worldWidth: this.width,
+        worldHeight: this.height,
+      })
+      : null;
+    this.journeyDestinations = Object.freeze([]);
+    this.destinationById = new Map();
     this.trips = 0;
     this.tick = 0;
     this.lastError = null;
@@ -342,6 +355,16 @@ export class SimulationEngine {
         worldHeight: this.height,
       })
       : null;
+    this.activity = this.environment?.activity && this.land && this.circulation
+      ? new ParcelActivityDemand(this.environment.activity, {
+        land: this.land,
+        circulation: this.circulation,
+        seed: this.seed,
+        worldWidth: this.width,
+        worldHeight: this.height,
+      })
+      : null;
+    this.#refreshJourneyDestinations();
     this.trips = 0;
     this.tick = 0;
     this.lastError = null;
@@ -404,6 +427,30 @@ export class SimulationEngine {
         destinationId: initialDestination?.id ?? null,
         arrivalCount: 0,
       };
+    });
+  }
+
+  #refreshJourneyDestinations() {
+    const authored = this.environment?.destinations || [];
+    const generated = this.activity?.destinations || [];
+    this.journeyDestinations = Object.freeze([...authored, ...generated]);
+    this.destinationById = new Map(
+      this.journeyDestinations.map((destination) => [destination.id, destination]),
+    );
+  }
+
+  #repairJourneyDestinations(agents) {
+    if (!this.environment?.journeys.enabled || this.journeyDestinations.length < 2) return agents;
+    return agents.map((agent) => {
+      if (this.destinationById.has(agent.destinationId)) return agent;
+      const destination = chooseNextDestination(
+        this.seed,
+        agent.id,
+        agent.arrivalCount,
+        this.journeyDestinations,
+        null,
+      );
+      return { ...agent, destinationId: destination?.id ?? null };
     });
   }
 
@@ -600,11 +647,11 @@ export class SimulationEngine {
 
   #currentDestination(agent) {
     if (!agent.destinationId) return null;
-    return this.environment?.destinations.find((destination) => destination.id === agent.destinationId) || null;
+    return this.destinationById.get(agent.destinationId) || null;
   }
 
   #switchArrivedJourneys(agents) {
-    const destinations = this.environment?.destinations || [];
+    const destinations = this.journeyDestinations;
     if (!this.environment?.journeys.enabled || destinations.length < 2) return agents;
     const arrivalRadius = this.environment.journeys.arrivalRadius;
 
@@ -624,12 +671,21 @@ export class SimulationEngine {
       const threshold = Math.max(arrivalRadius, destination.radius);
       if (Math.hypot(agent.x - destination.x, agent.y - destination.y) > threshold) return agent;
       this.trips += 1;
+      this.activity?.recordArrival(destination.id);
       const arrivalCount = agent.arrivalCount + 1;
+      // A generated local stop is followed by one of the authored regional
+      // anchors. This prevents an unconstrained chain of parcel-to-parcel
+      // trips from overwhelming the movement pattern that created frontage
+      // in the first place, while still letting every gate trip generate
+      // fresh local demand.
+      const nextDestinations = destination.kind === "parcel-activity"
+        ? this.environment.destinations
+        : destinations;
       const nextDestination = chooseNextDestination(
         this.seed,
         agent.id,
         arrivalCount,
-        destinations,
+        nextDestinations,
         destination.id,
       );
       return {
@@ -679,7 +735,7 @@ export class SimulationEngine {
       dt: this.dt,
     });
     const readonlyParams = Object.freeze({ ...this.params });
-    const destinations = this.environment?.destinations || Object.freeze([]);
+    const destinations = this.journeyDestinations;
     // Claimed cells close to through-movement on the following tick. Private
     // reservations stay traversable, preserving the road-versus-plot conflict
     // until either use actually wins public status or tenure becomes a claim.
@@ -915,6 +971,9 @@ export class SimulationEngine {
     }
     if (landTransition) this.land.commit(landTransition, { returnFrame: false });
     this.tick += 1;
+    this.activity?.advance(this.tick);
+    this.#refreshJourneyDestinations();
+    this.agents = this.#repairJourneyDestinations(this.agents);
     this.#recordObservation();
     this.lastError = null;
     return { ok: true, error: null };
@@ -968,6 +1027,7 @@ export class SimulationEngine {
   metrics({
     circulationMetrics = this.circulation?.metrics(),
     landMetrics = this.land?.metrics(),
+    activityMetrics = this.activity?.metrics(),
   } = {}) {
     const count = this.agents.length;
     circulationMetrics ||= {
@@ -993,6 +1053,12 @@ export class SimulationEngine {
       roadLandConflicts: 0,
       roadPreemptions: 0,
     };
+    activityMetrics ||= {
+      activeActivities: 0,
+      activityTrips: 0,
+      activityOpenings: 0,
+      activityClosures: 0,
+    };
     if (count === 0) {
       return {
         spread: 0,
@@ -1004,6 +1070,7 @@ export class SimulationEngine {
         trips: this.trips,
         ...circulationMetrics,
         ...landMetrics,
+        ...activityMetrics,
       };
     }
 
@@ -1037,6 +1104,7 @@ export class SimulationEngine {
       trips: this.trips,
       ...circulationMetrics,
       ...landMetrics,
+      ...activityMetrics,
     };
   }
 
@@ -1109,6 +1177,7 @@ export class SimulationEngine {
     const fieldFrame = this.field?.frame() || null;
     const landFrame = this.land?.frame(this.tick) || null;
     const circulationFrame = this.circulation?.frame() || null;
+    const activityFrame = this.activity?.frame() || null;
     const landCellById = this.land
       ? new Map(this.land.config.cells.map((cell) => [cell.id, cell]))
       : null;
@@ -1160,6 +1229,8 @@ export class SimulationEngine {
     });
     const environmentFrame = this.environment ? {
       destinations: this.environment.destinations,
+      activities: activityFrame?.destinations || Object.freeze([]),
+      journeyDestinations: this.journeyDestinations,
       obstacles: this.environment.obstacles,
       journeys: this.environment.journeys,
       field: fieldFrame,
@@ -1193,6 +1264,7 @@ export class SimulationEngine {
           field: this.field?.values,
           land: this.land?.checksumState(),
           circulation: this.circulation?.checksumState(),
+          activity: this.activity?.checksumState(),
         })
         : null,
       eventCursor: this.eventCursor,
@@ -1209,11 +1281,13 @@ export class SimulationEngine {
       metrics: this.metrics({
         circulationMetrics: circulationFrame?.metrics,
         landMetrics: landFrame?.metrics,
+        activityMetrics: activityFrame?.metrics,
       }),
       environment: environmentFrame,
       field: fieldFrame,
       land: landFrame,
       circulation: circulationFrame,
+      activity: activityFrame,
       agents: frameAgents,
     };
   }

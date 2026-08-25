@@ -968,7 +968,11 @@ function updateCanvasDescription(force = false) {
   const selectedCirculation = selectedCell
     ? circulationLabel(state.frame, selectedCell, circulationFeaturesByLandId(state.frame))
     : null;
-  const selectedDestination = state.frame.environment?.destinations?.find(
+  const selectedDestination = (
+    state.frame.environment?.journeyDestinations
+    || state.frame.environment?.destinations
+    || []
+  ).find(
     (destination) => destination.id === selected?.destinationId,
   );
   const selection = territoryAvailable() && selectedCell
@@ -1006,7 +1010,9 @@ function updateCanvasDescription(force = false) {
       activeMovementCells
     } actively used route cells; ${establishedFlowEdges} established path segments; ${
       flowDegenerations
-    } paths faded; ${
+    } paths faded; ${state.frame.metrics.activeActivities ?? 0} parcel activities; ${
+      state.frame.metrics.activityTrips ?? 0
+    } local visits; ${
       roadLandConflicts
     } road/plot conflicts.`
     : state.scenario.environment?.field?.enabled
@@ -1035,7 +1041,7 @@ function updateCanvasInstruction(mode = "default") {
   } else if (state.perturbed) {
     ui.canvasInstruction.textContent = "Manual perturbation applied · reset to reproduce the seeded run.";
   } else if (territoryAvailable()) {
-    ui.canvasInstruction.textContent = "Click a person or parcel to inspect · well-beaten traces become streets · quiet streets fade.";
+    ui.canvasInstruction.textContent = "Click a person or parcel to inspect · well-beaten traces become streets · diamonds mark parcel activities.";
   } else {
     ui.canvasInstruction.textContent = "Click a person to inspect · drag a person to perturb the group.";
   }

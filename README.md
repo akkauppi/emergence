@@ -23,7 +23,9 @@ desire paths, public streets, and territory.
 - **Territory · paths become streets** — observe well-beaten continuous paths mature
   into streets as walkers adapt within a bounded forward view; clear plots follow
   established frontage, quiet streets and unused provisional easements fade, and
-  sustained narrow crossings can cut parcels into public right-of-way.
+  sustained narrow crossings can cut parcels into public right-of-way. Mature parcels
+  beside surviving streets can become homes, markets, workshops, wells, or greens,
+  adding new local trips to the movement pattern that first created their frontage.
 
 Useful controls include pause, single-step, same-seed reset, population, tempo,
 relationship overlays, delayed sensing, and drag-to-perturb interventions.

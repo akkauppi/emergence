@@ -158,8 +158,12 @@ test("territory worker frames clone, mature and retire streets, reset, and repla
     initialFrame.circulation.entries.map((entry) => entry.landId).sort(),
   );
   assert.equal(initialFrame.circulation.edges.length, 0);
+  assert.equal(initialFrame.activity.enabled, true);
+  assert.deepEqual(initialFrame.activity.destinations, []);
   assert.doesNotThrow(() => structuredClone(initialFrame.circulation));
   assert.deepEqual(structuredClone(initialFrame.circulation), initialFrame.circulation);
+  assert.doesNotThrow(() => structuredClone(initialFrame.activity));
+  assert.deepEqual(structuredClone(initialFrame.activity), initialFrame.activity);
   assert.equal(initialFrame.metrics.claimedCells, 0);
   assert.equal(initialFrame.metrics.landConflicts, 0);
   assert.equal(initialFrame.metrics.roadCells, 2);
@@ -201,6 +205,7 @@ test("territory worker frames clone, mature and retire streets, reset, and repla
   assert.deepEqual(resetFrame.land.parcels, []);
   assert.deepEqual(resetFrame.land.events, []);
   assert.deepEqual(resetFrame.circulation, initialFrame.circulation);
+  assert.deepEqual(resetFrame.activity, initialFrame.activity);
   assert.equal(resetFrame.metrics.claimedCells, 0);
   assert.equal(resetFrame.metrics.reservedCells, 0);
   assert.equal(resetFrame.metrics.landClaims, 0);
@@ -222,6 +227,7 @@ test("territory worker frames clone, mature and retire streets, reset, and repla
   assert.equal(replayFrame.checksum, evolvedFrame.checksum);
   assert.deepEqual(replayFrame.land, evolvedFrame.land);
   assert.deepEqual(replayFrame.circulation, evolvedFrame.circulation);
+  assert.deepEqual(replayFrame.activity, evolvedFrame.activity);
   assert.deepEqual(replayFrame.metrics, evolvedFrame.metrics);
 });
 

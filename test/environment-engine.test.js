@@ -248,6 +248,116 @@ test("behavior receives frozen environment and normalized scalar-field sampling"
   assert.ok(frame.environment.field.max > 0);
 });
 
+test("mature parcel activities join journey choices and count completed visits", () => {
+  let captured = null;
+  const engine = new SimulationEngine({
+    behavior: (context) => {
+      if (context.self.id === 0) captured = context;
+      return zeroBehavior();
+    },
+    ruleKey: "parcel-activity-probe",
+    seed: 77,
+    population: 3,
+    width: 100,
+    height: 100,
+    params: {},
+    relationMode: "none",
+    environment: {
+      destinations: [
+        { id: "west", x: 8, y: 50, radius: 6, weight: 1 },
+        { id: "east", x: 92, y: 50, radius: 6, weight: 1 },
+      ],
+      journeys: { enabled: true, spawnAtDestinations: true, arrivalRadius: 12 },
+      land: {
+        enabled: true,
+        origin: { x: 0, y: 40 },
+        columns: 5,
+        rows: 1,
+        cellSize: 20,
+        gap: 0,
+        policy: { reservationTicks: 0, expiryTicks: 30, requireContiguous: true },
+      },
+      circulation: {
+        enabled: true,
+        entrySides: ["west", "east"],
+        reserveThreshold: 100,
+        maxNewPerTick: 0,
+      },
+      activity: {
+        enabled: true,
+        startTick: 0,
+        maturationTicks: 1,
+        frontageLossTicks: 10,
+        minimumParcelCells: 1,
+        maximumActivities: 2,
+        radius: 5,
+        accessOffset: 10,
+        types: [{
+          id: "market",
+          label: "Market",
+          frequency: 1,
+          weight: 1,
+          minimumCells: 1,
+        }],
+      },
+    },
+  });
+
+  const reservation = engine.land.stage([
+    { agentId: 0, type: "reserve", landId: "land-0-1", bid: 1 },
+    { agentId: 1, type: "reserve", landId: "land-0-3", bid: 1 },
+  ], 0, {
+    publicCells: engine.circulation.publicLandIds(),
+    occupiedLandIds: [],
+  });
+  assert.equal(reservation.ok, true);
+  engine.land.commit(reservation, { returnFrame: false });
+  const claim = engine.land.stage([
+    { agentId: 0, type: "claim", landId: "land-0-1" },
+    { agentId: 1, type: "claim", landId: "land-0-3" },
+  ], 1, {
+    publicCells: engine.circulation.publicLandIds(),
+    occupiedLandIds: [],
+  });
+  assert.equal(claim.ok, true);
+  engine.land.commit(claim, { returnFrame: false });
+
+  assert.equal(engine.step().ok, true);
+  let frame = engine.frame();
+  assert.equal(frame.activity.destinations.length, 2);
+  assert.equal(frame.environment.destinations.length, 2, "authored gates remain a distinct layout layer");
+  assert.equal(frame.environment.activities.length, 2);
+  assert.equal(frame.environment.journeyDestinations.length, 4);
+  assert.equal(frame.metrics.activeActivities, 2);
+
+  captured = null;
+  assert.equal(engine.step().ok, true);
+  assert.ok(captured);
+  assert.ok(Object.isFrozen(captured.destinations));
+  assert.equal(captured.destinations.length, 4);
+  const activity = captured.destinations.find((destination) => destination.id === "activity:parcel-0");
+  assert.equal(activity.id, "activity:parcel-0");
+  assert.ok(Object.isFrozen(activity));
+
+  const walker = engine.agents[0];
+  walker.destinationId = activity.id;
+  walker.x = activity.x;
+  walker.y = activity.y;
+  walker.vx = 0;
+  walker.vy = 0;
+  const tripsBefore = engine.metrics().trips;
+  assert.equal(engine.step().ok, true);
+  frame = engine.frame();
+  assert.equal(frame.metrics.trips, tripsBefore + 1);
+  assert.equal(frame.metrics.activityTrips, 1);
+  assert.equal(
+    frame.activity.destinations.find((destination) => destination.id === activity.id).visits,
+    1,
+  );
+  assert.notEqual(engine.agents[0].destinationId, activity.id);
+  assert.ok(["east", "west"].includes(engine.agents[0].destinationId));
+});
+
 test("scalar field accumulates deposits and applies fractional decay", () => {
   const field = new ScalarField(100, 100, { cellSize: 10 });
   field.evolve([{ x: 25, y: 25 }], { deposit: 4, persistence: 1 });

@@ -24,6 +24,7 @@ const COLORS = {
   personB: "#f3c35c",
   target: "#f4ede0",
   destination: "#70d6b5",
+  activity: "#f3c35c",
   obstacle: "#0c1728",
   layoutPreview: "rgba(112, 214, 181, 0.22)",
   layoutPreviewLine: "rgba(112, 214, 181, 0.94)",
@@ -449,6 +450,7 @@ export class CanvasRenderer {
 
     const obstacles = Array.isArray(environment.obstacles) ? environment.obstacles : [];
     const destinations = Array.isArray(environment.destinations) ? environment.destinations : [];
+    const activities = Array.isArray(environment.activities) ? environment.activities : [];
     const hairline = 1 / this.viewport.scale;
 
     for (const obstacle of obstacles) {
@@ -526,6 +528,47 @@ export class CanvasRenderer {
         COLORS.destination,
       );
     }
+
+    const selectedDestinationId = this.#agentById(this.selectedId)?.destinationId;
+    const activityColors = {
+      green: "#70d6b5",
+      home: "#f3c35c",
+      market: "#f27a50",
+      well: "#78b9e8",
+      workshop: "#bca7ef",
+    };
+    for (const activity of activities) {
+      const node = resolveDestination(activity);
+      if (!node) continue;
+      const radius = Math.max(4, node.radius);
+      const color = activityColors[activity.activityType] || COLORS.activity;
+      context.save();
+      context.fillStyle = "rgba(20, 33, 55, 0.92)";
+      context.strokeStyle = color;
+      context.lineWidth = hairline * (activity.id === selectedDestinationId ? 2.4 : 1.6);
+      context.beginPath();
+      context.moveTo(node.x, node.y - radius);
+      context.lineTo(node.x + radius, node.y);
+      context.lineTo(node.x, node.y + radius);
+      context.lineTo(node.x - radius, node.y);
+      context.closePath();
+      context.fill();
+      context.stroke();
+      context.fillStyle = color;
+      context.beginPath();
+      context.arc(node.x, node.y, Math.max(hairline * 1.8, radius * 0.2), 0, Math.PI * 2);
+      context.fill();
+      context.restore();
+      if (activity.id === selectedDestinationId) {
+        this.#drawEnvironmentLabel(
+          context,
+          activity.label ?? activity.activityType,
+          node.x,
+          node.y - radius - 8 / this.viewport.scale,
+          color,
+        );
+      }
+    }
   }
 
   #drawEnvironmentLabel(context, label, x, y, color) {
@@ -576,7 +619,11 @@ export class CanvasRenderer {
     const self = this.#displayAgent(canonicalSelf);
 
     if (this.relationMode === "none") {
-      const destination = (this.frame.environment?.destinations || [])
+      const destination = (this.frame.environment?.journeyDestinations
+        || [
+          ...(this.frame.environment?.destinations || []),
+          ...(this.frame.environment?.activities || []),
+        ])
         .find((candidate) => candidate.id === canonicalSelf.destinationId);
       const target = resolveDestination(destination);
       if (!target) return;

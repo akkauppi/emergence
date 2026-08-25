@@ -11,21 +11,24 @@ Territory 03 keeps one causal chain:
 
 ```text
 bounded movement → fading traces → maintained streets → frontage settlement
-       ↑                                                   ↓
-       └─ costly detours or prolonged stalls → easements ─┘
+       ↑                         ↑                         ↓
+       ├── regional trips ───────┴──── mature parcel activities
+       └─ costly detours or prolonged stalls → easements
                                             ↓
                                sustained-use acquisition
 ```
 
-The selected next mechanism is **bounded-view, locally adaptive wayfinding**.
-Walkers retain a rough bearing toward their destination but choose only their
-next visible step. Nearby traces and current motion influence that step; walkers
-do not receive a completed shortest route around every parcel.
+The latest mechanism is **bounded parcel-activity demand**, built on the earlier
+bounded-view, locally adaptive wayfinding slice. Walkers still retain a rough bearing
+toward their destination but choose only their next visible step. Mature parcels beside
+surviving public frontage can now become local destinations, so settlement changes later
+movement instead of remaining only an output layer.
 
-Land use, new destination formation, street capacity, and alternative network
-growth algorithms remain later experiments. Adding them simultaneously would
-make visually interesting output easier to obtain but causal explanations much
-harder to test.
+This is not yet a land-use or building model: activity types are abstract trip purposes,
+not households, jobs, floor area, production, or occupancy. Street capacity and
+alternative network growth algorithms remain later experiments. Adding them
+simultaneously would make visually interesting output easier to obtain but causal
+explanations much harder to test.
 
 ## Evidence and implementation implications
 
@@ -35,7 +38,7 @@ harder to test.
 | Sharmin and Kamruzzaman, [shortest distance versus least directional change](https://www.sciencedirect.com/science/article/pii/S0966692318303867) | Both metric distance and directional change influence pedestrian route choice; least directional change was the stronger individual explanation in their sample. | Score progress and heading continuity rather than metric distance alone. |
 | Filomena and Verstegen, [landmarks in pedestrian navigation](https://www.sciencedirect.com/science/article/pii/S0198971520303069), with [PedSimCity](https://github.com/g-filomena/PedSimCity) | Landmark-aware navigation produced more heterogeneous pedestrian distributions than pure minimization models and better matched several properties of observed GPS routes. | Let future activities or junctions become locally salient; do not add decorative landmarks with no causal role. |
 | Filomena et al., [empirical pedestrian strategy heterogeneity](https://doi.org/10.1016/j.jenvp.2022.101807) | Empirical configurations changed where flows concentrated, but heterogeneous agent clusters differed only modestly from an empirically calibrated homogeneous population at the global level. | Improve the shared route-choice mechanism first. Avoid a large catalogue of personality types until a specific comparison requires it. |
-| Santos et al., [procedural city generation using land-use/transport interaction](https://arxiv.org/abs/2211.01959) and [AutoPlanner source](https://github.com/LFRusso/autoplanner) | Accessibility and differentiated residential, commercial, industrial, and recreational uses can be coupled incrementally. | A later scenario should let occupied parcels create activities and therefore new trips. The current slice does not need reinforcement learning. |
+| Santos et al., [procedural city generation using land-use/transport interaction](https://arxiv.org/abs/2211.01959) and [AutoPlanner source](https://github.com/LFRusso/autoplanner) | Accessibility and differentiated residential, commercial, industrial, and recreational uses can be coupled incrementally. | Let mature fronted parcels create a bounded first set of abstract activities and trips. Explicit occupancy and reinforcement learning are not required for this slice. |
 | Levinson and Yerra, [self-organization of surface transportation networks](https://pubsonline.informs.org/doi/10.1287/trsc.1050.0132) | Coupled demand, cost, revenue, and investment can produce road hierarchy without a predefined hierarchy. | Later add capacity, condition, maintenance, and congestion as one coherent street-hierarchy experiment. |
 | Barthélemy and Flammini, [local optimization of urban street patterns](https://journals.aps.org/prl/abstract/10.1103/PhysRevLett.100.138702) | A local connection rule can reproduce several statistical properties of planar street networks better than grids or Voronoi tessellations. | Keep as a comparison between planned connectors and movement-grown paths, or use it when new activities need connection. |
 | Tero et al., [adaptive biological network design](https://ora.ox.ac.uk/objects/uuid%3A01616eb5-3b21-4848-8b63-f909f34a83cc) | Reinforcement by flow plus decay balances transport cost, efficiency, and robustness. | A Physarum-style conductance network is a useful separate comparison. It overlaps too strongly with Territory's existing reinforcement loop to add here wholesale. |
@@ -220,9 +223,60 @@ In the seed-2026 reference run, stuck counts at ticks 1000, 1500, 2000, and 2400
 provisional releases. These are healthier than a permanently accumulating overlay, but
 the crossing count remains a calibration signal for the later activity-demand loop.
 
+### Parcel activity-demand follow-up
+
+The first demand loop adds one feedback and leaves buildings, explicit occupancy, and
+street capacity out of scope:
+
+1. Activity formation begins at tick 480, after the movement-only and early settlement
+   phases. A parcel must have existed for 120 observations, contain at least two cells,
+   satisfy its purpose-specific size floor, and touch a current public-way cell.
+2. Its destination sits ten units outside the claimed cell on the busiest eligible
+   public edge. That entrance remains fixed while the edge survives, so changing traffic
+   does not make a walker's target jitter between parcel sides.
+3. Eight simultaneous activities bound the feedback. The first eligible cohort balances
+   homes, markets, workshops, wells, and greens before frequency permits repeats. Types
+   carry different trip weights but are assigned with seeded, order-independent ties.
+4. Tenure loss closes an activity immediately. Public-frontage loss starts a 90-tick
+   grace period; recovery preserves the entrance, while sustained loss retires it.
+5. Generated activities join the frozen weighted journey set but stay separate from
+   authored, editable gates. After visiting an activity, a walker must next choose a
+   regional gate. A gate arrival may choose another gate or a local activity. This
+   regional/local alternation prevents parcel-to-parcel chains from taking over the
+   movement pattern that originally produced frontage.
+6. Openings, closures, active purposes, and local arrivals are framed, measured, rendered
+   as diamond markers, and included in deterministic checksums.
+
+An early 12-activity version without trip alternation was rejected. By tick 2400 it sent
+roughly two thirds of walkers toward parcel activities, produced 197 local visits, raised
+active easements to 63, and left 10 walkers below the 25-units-over-200-ticks mobility
+probe. The image was lively, but the new loop had overwhelmed its causal substrate.
+
+The selected eight-activity version produced the following seed-2026 comparison. The
+easement-only values are the immediately preceding reference run; the activity values
+use the same seed, population, and probe.
+
+| Metric | Easement-only | Activity demand |
+| --- | ---: | ---: |
+| Stuck walkers at ticks 1000 / 1500 / 2000 / 2400 | 1 / 1 / 0 / 3 | 3 / 3 / 8 / 5 |
+| Completed trips at tick 2400 | 325 | 407 |
+| Local activity visits at tick 2400 | 0 | 120 |
+| Active activities at tick 2400 | 0 | 8 |
+| Active easements at tick 2400 | 45 | 50 |
+| Acquired rights-of-way at tick 2400 | 34 | 39 |
+| Prior provisional easement releases at tick 2400 | 35 | 37 |
+
+The demand loop clearly works: all five purposes receive visits and journey throughput
+does not collapse. It also exposes a falsification signal. Late-run immobility is higher,
+especially around tick 2000, even though only 23–28 walkers target activities and the
+diagnosed slow agents are not concentrated at activity entrances. This points to changed
+parcel/path morphology and pressure timing rather than an entrance-collision defect.
+The next calibration should inspect those late journeys across several seeds before
+raising activity capacity or adding more land-use detail.
+
 ## Acceptance and falsification
 
-The bounded-view slice is useful if, across several fixed seeds:
+The coupled Territory slice is useful if, across several fixed seeds:
 
 - path concentration falls without journey completion collapsing;
 - multiple approach directions and non-orthogonal segments survive;
@@ -231,6 +285,8 @@ The bounded-view slice is useful if, across several fixed seeds:
 - sustained collision stalls eventually resolve while brief contacts create no pressure;
 - no reservation or claim forms under an occupying walker, including a same-tick arrival;
 - a mature public cut leaves at most one connected private component for its owner;
+- parcel activities produce measurable local trips without replacing regional movement
+  or trapping walkers at their frontage entrances;
 - replay, tick chunking, and agent storage order remain deterministic; and
 - runtime remains comparable to the complete-route baseline.
 
@@ -240,10 +296,11 @@ or the outcome depends on adding further unrelated rules.
 
 ## Ordered follow-ups
 
-1. Evaluate bounded wayfinding over a small fixed seed suite and add route-distribution
+1. Evaluate bounded wayfinding and parcel activity demand over a small fixed seed suite;
+   distinguish temporary oscillation from lasting deadlock and add route-distribution
    measurements if trail concentration cannot distinguish branching from noise.
-2. In a new activity-focused slice, let some mature parcels create homes, markets,
-   workshops, wells, or greens and generate purpose-specific trips.
+2. Only after that comparison, decide whether activities need explicit opening/closure
+   decisions, household/job occupancy, or a larger capacity.
 3. Add street condition and capacity as a separate feedback: use funds maintenance,
    overload raises cost, and quiet capacity decays.
 4. Build comparison demos for Physarum conductance, locally optimized connectors,
