@@ -265,6 +265,56 @@ test("continuous traces require repeated use to become streets and fade after qu
   assert.equal(circulation.metrics().flowDegenerations, 1);
 });
 
+test("street hierarchy turns sustained load into capacity and quiet ticks into deterioration", () => {
+  const { circulation } = createStores({
+    circulation: {
+      flowPersistence: 1,
+      flowTraceThreshold: 0.1,
+      flowPathThreshold: 1,
+      flowFormationTicks: 1,
+      flowReleaseThreshold: 0,
+      hierarchy: {
+        minimumCapacity: 1,
+        initialCapacity: 2,
+        maximumCapacity: 6,
+        initialCondition: 0.5,
+        conditionCapacityFloor: 0.5,
+        maintenanceLoad: 0.5,
+        investmentThreshold: 0.5,
+        investmentRate: 0.5,
+        capacityDecay: 0.25,
+        maintenanceRate: 0.2,
+        deteriorationRate: 0.1,
+      },
+    },
+  });
+  const movement = [{
+    agentId: 3,
+    from: { x: 5, y: 5 },
+    to: { x: 35, y: 25 },
+  }];
+
+  circulation.commit(circulation.stage(movement, 0));
+  const maintained = circulation.frame().edges.find((edge) => edge.flow);
+  assert.equal(maintained.status, "road");
+  assert.ok(maintained.designCapacity > 2);
+  assert.ok(maintained.condition > 0.5);
+  assert.ok(maintained.capacity > 1);
+  assert.ok(Object.isFrozen(circulation.config.hierarchy));
+  assert.equal(circulation.metrics().meanFlowCapacity, maintained.capacity);
+  const sample = circulation.viewFor({ id: 1, position: { x: 20, y: 15 } }, 1)
+    .flow({ x: 20, y: 15 }, { x: 30, y: 20 });
+  assert.equal(sample.street, true);
+  assert.equal(sample.id, maintained.id);
+
+  circulation.commit(circulation.stage([], 1));
+  const quiet = circulation.frame().edges.find((edge) => edge.flow);
+  assert.ok(quiet.designCapacity < maintained.designCapacity);
+  assert.ok(quiet.condition < maintained.condition);
+  assert.ok(quiet.capacity < maintained.capacity);
+  assert.ok(quiet.width < maintained.width);
+});
+
 test("only a costly accumulated detour creates pressure and an easement", () => {
   const { land, circulation } = createStores({
     columns: 3,

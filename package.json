@@ -24,6 +24,7 @@
     "dev": "node scripts/dev-server.mjs",
     "build": "node scripts/build.mjs",
     "test": "node --test",
+    "evaluate:territory": "node scripts/evaluate-territory.mjs",
     "check": "npm run test && npm run build"
   },
   "engines": {

@@ -18,17 +18,25 @@ bounded movement → fading traces → maintained streets → frontage settlemen
                                sustained-use acquisition
 ```
 
-The latest mechanism is **bounded parcel-activity demand**, built on the earlier
+Territory 03's latest mechanism is **bounded parcel-activity demand**, built on the earlier
 bounded-view, locally adaptive wayfinding slice. Walkers still retain a rough bearing
 toward their destination but choose only their next visible step. Mature parcels beside
 surviving public frontage can now become local destinations, so settlement changes later
 movement instead of remaining only an output layer.
 
-This is not yet a land-use or building model: activity types are abstract trip purposes,
-not households, jobs, floor area, production, or occupancy. Street capacity and
-alternative network growth algorithms remain later experiments. Adding them
-simultaneously would make visually interesting output easier to obtain but causal
-explanations much harder to test.
+Street Hierarchy 04 is now a separate comparison with one additional feedback:
+
+```text
+current load → maintenance and investment → usable capacity
+      ↑                                      ↓
+route choice ← local overload cost ← condition and congestion
+```
+
+Territory itself is unchanged by that optional policy. This is still not a land-use or
+building model: activity types are abstract trip purposes, not households, jobs, floor
+area, production, or occupancy. Alternative network growth algorithms remain separate
+future experiments; combining them here would make causal explanations much harder to
+test.
 
 ## Evidence and implementation implications
 
@@ -39,7 +47,7 @@ explanations much harder to test.
 | Filomena and Verstegen, [landmarks in pedestrian navigation](https://www.sciencedirect.com/science/article/pii/S0198971520303069), with [PedSimCity](https://github.com/g-filomena/PedSimCity) | Landmark-aware navigation produced more heterogeneous pedestrian distributions than pure minimization models and better matched several properties of observed GPS routes. | Let future activities or junctions become locally salient; do not add decorative landmarks with no causal role. |
 | Filomena et al., [empirical pedestrian strategy heterogeneity](https://doi.org/10.1016/j.jenvp.2022.101807) | Empirical configurations changed where flows concentrated, but heterogeneous agent clusters differed only modestly from an empirically calibrated homogeneous population at the global level. | Improve the shared route-choice mechanism first. Avoid a large catalogue of personality types until a specific comparison requires it. |
 | Santos et al., [procedural city generation using land-use/transport interaction](https://arxiv.org/abs/2211.01959) and [AutoPlanner source](https://github.com/LFRusso/autoplanner) | Accessibility and differentiated residential, commercial, industrial, and recreational uses can be coupled incrementally. | Let mature fronted parcels create a bounded first set of abstract activities and trips. Explicit occupancy and reinforcement learning are not required for this slice. |
-| Levinson and Yerra, [self-organization of surface transportation networks](https://pubsonline.informs.org/doi/10.1287/trsc.1050.0132) | Coupled demand, cost, revenue, and investment can produce road hierarchy without a predefined hierarchy. | Later add capacity, condition, maintenance, and congestion as one coherent street-hierarchy experiment. |
+| Levinson and Yerra, [self-organization of surface transportation networks](https://pubsonline.informs.org/doi/10.1287/trsc.1050.0132) | Coupled demand, cost, revenue, and investment can produce road hierarchy without a predefined hierarchy. | Implement capacity, condition, maintenance, and congestion as the separate Street Hierarchy 04 comparison, leaving Territory defaults untouched. |
 | Barthélemy and Flammini, [local optimization of urban street patterns](https://journals.aps.org/prl/abstract/10.1103/PhysRevLett.100.138702) | A local connection rule can reproduce several statistical properties of planar street networks better than grids or Voronoi tessellations. | Keep as a comparison between planned connectors and movement-grown paths, or use it when new activities need connection. |
 | Tero et al., [adaptive biological network design](https://ora.ox.ac.uk/objects/uuid%3A01616eb5-3b21-4848-8b63-f909f34a83cc) | Reinforcement by flow plus decay balances transport cost, efficiency, and robustness. | A Physarum-style conductance network is a useful separate comparison. It overlaps too strongly with Territory's existing reinforcement loop to add here wholesale. |
 | Raimbault, [aggregation and diffusion in urban morphogenesis](https://journals.plos.org/plosone/article?id=10.1371%2Fjournal.pone.0203516) and [model source](https://github.com/JusteRaimbault/Density) | Two opposing mesoscopic processes reproduce a broad range of observed density morphologies. | Build a separate macro-scale compact-growth/sprawl experiment; do not mix population-density diffusion into individual parcel tenure. |
@@ -271,8 +279,61 @@ does not collapse. It also exposes a falsification signal. Late-run immobility i
 especially around tick 2000, even though only 23–28 walkers target activities and the
 diagnosed slow agents are not concentrated at activity entrances. This points to changed
 parcel/path morphology and pressure timing rather than an entrance-collision defect.
-The next calibration should inspect those late journeys across several seeds before
-raising activity capacity or adding more land-use detail.
+The multi-seed calibration below confirms that the late immobility is not peculiar to
+seed 2026.
+
+## Deterministic multi-seed evaluation
+
+`npm run evaluate:territory` now runs seeds 104, 613, 991, and 2026 to tick 2400 by
+default. It captures frames at ticks 2200 and 2400 and reports an agent as stuck only
+when both conditions hold: no completed trip in that window and less than 25 world
+units of endpoint displacement. `--scenario`, `--seeds`, `--ticks`, `--window`,
+`--distance`, `--population`, and `--json` support smaller probes and machine-readable
+comparisons.
+
+Route diversity is not inferred from appearance. For established continuous flow
+segments, the evaluator computes Shannon's effective number of use-weighted edges and
+divides it by the observed edge count. A value near one means sustained use is spread
+evenly; a lower value means a few streets dominate. Direction entropy, occupied flow
+cells, and cells containing multiple established headings are reported separately.
+These measurements distinguish distributed use from a noisy field, but they do not
+claim that the locally quantized render segments form an exact endpoint graph.
+
+The fixed-suite result at tick 2400 is:
+
+| Mean over four seeds | Territory 03 | Street Hierarchy 04 |
+| --- | ---: | ---: |
+| Completed trips | 382.0 | 400.3 |
+| Stuck walkers in final 200 ticks | 5.50 (range 4–8) | 5.00 (range 2–9) |
+| Stuck share | 7.6% | 6.9% |
+| Route diversity | 0.636 | 0.626 |
+| Established flow segments | 54.3 | 64.5 |
+| Cells with multiple headings | 5.8 | 8.8 |
+| Active easements | 52.0 | 42.8 |
+| Mean usable street capacity | — | 0.64 |
+| Overloaded established segments | — | 5.1% |
+
+Territory therefore still has a real late-deadlock tail; a single successful seed would
+have understated it. Street Hierarchy is also a tradeoff rather than a general
+improvement: it completes about 4.8% more trips and sustains more streets and
+multi-heading locations in this small suite, but its use is slightly less evenly
+distributed and seed 613 has nine stuck walkers. Capacity and overload are instantaneous
+final-frame values, not lifetime averages.
+
+The hierarchy feedback remains one loop. A newly established segment receives initial
+design capacity and condition. Current load repairs condition; load above a fraction of
+usable capacity adds design capacity. A tick with no maintenance load reduces condition
+and capacity. Effective capacity combines both values, controls rendered width, and
+turns load into congestion. Only Street Hierarchy agents sample nearby aligned
+established segments: maintained capacity is attractive, while load above actual
+capacity adds a local route penalty. Territory has no hierarchy configuration and does
+not perform this lookup.
+
+The first hierarchy sampler probed up to 45 map keys for every candidate step and made
+the long comparison materially slower. It now builds per-tick candidate lists around
+the small established network and performs one lookup per candidate. The optimization
+preserved seed 104's tick-720 checksum (`01ce0d37`) and all reported metrics exactly;
+a clean cross-machine runtime benchmark remains a follow-up rather than a claim here.
 
 ## Acceptance and falsification
 
@@ -287,6 +348,8 @@ The coupled Territory slice is useful if, across several fixed seeds:
 - a mature public cut leaves at most one connected private component for its owner;
 - parcel activities produce measurable local trips without replacing regional movement
   or trapping walkers at their frontage entrances;
+- hierarchy capacity varies under use, actual overload can alter later local choices,
+  and quiet streets can lose capacity without changing Territory's control run;
 - replay, tick chunking, and agent storage order remain deterministic; and
 - runtime remains comparable to the complete-route baseline.
 
@@ -296,13 +359,14 @@ or the outcome depends on adding further unrelated rules.
 
 ## Ordered follow-ups
 
-1. Evaluate bounded wayfinding and parcel activity demand over a small fixed seed suite;
-   distinguish temporary oscillation from lasting deadlock and add route-distribution
-   measurements if trail concentration cannot distinguish branching from noise.
-2. Only after that comparison, decide whether activities need explicit opening/closure
+1. Diagnose the remaining four-to-eight late-stuck Territory journeys using the fixed
+   suite. Classify parcel-face stalls, local oscillation, and genuinely disconnected
+   demand before changing pressure or permeability again.
+2. Compare Street Hierarchy against the same-seed control at additional checkpoints and
+   benchmark its optimized lookup. Revise it if higher throughput depends on one trunk,
+   if the seed-613 tail repeats broadly, or if capacity differences remain visually weak.
+3. Only after those comparisons, decide whether activities need explicit opening/closure
    decisions, household/job occupancy, or a larger capacity.
-3. Add street condition and capacity as a separate feedback: use funds maintenance,
-   overload raises cost, and quiet capacity decays.
 4. Build comparison demos for Physarum conductance, locally optimized connectors,
    aggregation–diffusion, or space colonization only when each poses its own question.
 

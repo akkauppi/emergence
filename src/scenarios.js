@@ -464,7 +464,7 @@ function angleDifference(first, second) {
 // forward view. This avoids giving every walker the same complete route around
 // a parcel. Velocity supplies short, physical path memory; fading footfall is
 // the shared local affordance left by earlier walkers.
-function preferredWaypoint(self, goal, obstacles, field, params, world) {
+function preferredWaypoint(self, goal, obstacles, field, params, world, circulation) {
   const position = self.position;
   const radius = Math.max(0, finite(self.radius, 0));
   const toGoal = { x: goal.x - position.x, y: goal.y - position.y };
@@ -510,6 +510,10 @@ function preferredWaypoint(self, goal, obstacles, field, params, world) {
     4294967296;
   const handedness = stableRank < 0.5 ? -1 : 1;
   const trailInfluence = Math.max(0, finite(params.trailInfluence, 1));
+  const capacityPreference = Math.max(0, finite(params.capacityPreference, 0));
+  const congestionAvoidance = Math.max(0, finite(params.congestionAvoidance, 0));
+  const samplesStreetHierarchy = (capacityPreference > 0 || congestionAvoidance > 0) &&
+    typeof circulation?.flow === "function";
   let best = null;
 
   function consider(point, rank, kind = "view") {
@@ -530,12 +534,24 @@ function preferredWaypoint(self, goal, obstacles, field, params, world) {
       y: position.y + stepY * 0.55
     };
     const trace = sample(middle) * 0.35 + sample(point) * 0.65;
+    const flow = samplesStreetHierarchy
+      ? circulation.flow(middle, { x: stepX, y: stepY })
+      : null;
+    const maintainedRoute = flow?.street
+      ? clamp(finite(flow.condition), 0, 1) *
+        (0.35 + clamp(finite(flow.relativeCapacity), 0, 1) * 0.65)
+      : 0;
+    const overload = flow?.street
+      ? Math.max(0, finite(flow.congestion) - 1)
+      : 0;
     const sideAffinity = handedness * Math.sin(goalDelta) * 0.06;
     const score =
       progress * 2.4 +
       directness * 0.7 +
       continuity * 0.75 +
       trace * trailInfluence * 2.2 +
+      maintainedRoute * capacityPreference * 1.4 -
+      overload * congestionAvoidance * 1.6 +
       sideAffinity -
       (kind === "corner" ? 0.08 : 0) +
       (kind === "easement" ? 0.35 : 0);
@@ -648,7 +664,8 @@ function behave({ self, destination, obstacles, field, params, vec, world, land,
       Array.isArray(obstacles) ? obstacles : [],
       field,
       params,
-      world
+      world,
+      circulation
     )
     : null;
   const movement = walkingTarget
@@ -878,6 +895,104 @@ function behave({ self, destination, obstacles, field, params, vec, world, land,
   const bid = Math.max(0.01, Math.round((best.score + growthBid + 4) * 1_000) / 1_000);
   return { ...movement, reserveLand: { landId: best.id, bid } };
 }`;
+
+function streetHierarchyVariant(territory) {
+  const controlsByKey = new Map(territory.controls.map((control) => [control.key, control]));
+  return {
+    ...territory,
+    id: "street-hierarchy",
+    title: "Street hierarchy · use earns capacity",
+    shortTitle: "Grow a street hierarchy",
+    kicker: "Demand maintains and enlarges streets",
+    stage: { number: "04", label: "Street hierarchy laboratory / 04" },
+    description:
+      "This comparison starts from Territory's same off-grid movement, parcel, activity, and easement rules. Sustained load now maintains street condition and grows usable capacity; quiet streets deteriorate and narrow, while overload makes a route locally less attractive and can distribute later trips across alternatives.",
+    steps: [
+      "Grow streets from repeated movement",
+      "Maintain streets that carry current load",
+      "Invest where demand exceeds capacity",
+      "Let congestion redistribute later trips",
+    ],
+    question:
+      "Run this and Territory with the same seed. Does earned capacity create a legible hierarchy without collapsing movement onto one trunk, and do overloaded segments produce useful alternatives rather than gridlock?",
+    summaryMetrics: [
+      {
+        label: "Mean street capacity",
+        key: "meanFlowCapacity",
+        format: "decimal-2",
+        detail: "mean usable capacity of established off-grid streets",
+      },
+      {
+        label: "Overloaded streets",
+        key: "overloadedFlowShare",
+        format: "fraction-percent",
+        detail: "established flow segments carrying at least their usable capacity",
+      },
+    ],
+    metric: {
+      label: "Street condition",
+      key: "meanFlowCondition",
+      format: "fraction-percent",
+      fallback: "forming…",
+      detail: "mean maintained condition of established flow segments",
+    },
+    trend: {
+      label: "Capacity trend",
+      key: "meanFlowCapacity",
+      ariaLabel: "Recent mean usable street capacity",
+      minimumRange: 0.5,
+    },
+    environment: {
+      ...territory.environment,
+      circulation: {
+        ...territory.environment.circulation,
+        hierarchy: {
+          enabled: true,
+          minimumCapacity: 0.5,
+          initialCapacity: 1.2,
+          maximumCapacity: 6,
+          initialCondition: 0.65,
+          conditionCapacityFloor: 0.4,
+          maintenanceLoad: 0.5,
+          investmentThreshold: 0.8,
+          investmentRate: 0.05,
+          capacityDecay: 0.008,
+          maintenanceRate: 0.018,
+          deteriorationRate: 0.004,
+          samplingRadius: 1,
+        },
+      },
+    },
+    params: {
+      ...territory.params,
+      capacityPreference: 0.65,
+      congestionAvoidance: 0.8,
+    },
+    controls: [
+      controlsByKey.get("trailInfluence"),
+      controlsByKey.get("viewAngle"),
+      {
+        key: "capacityPreference",
+        label: "Prefer maintained streets",
+        min: 0,
+        max: 2,
+        step: 0.05,
+        format: "decimal-2",
+      },
+      {
+        key: "congestionAvoidance",
+        label: "Avoid overload",
+        min: 0,
+        max: 3,
+        step: 0.05,
+        format: "decimal-2",
+      },
+      controlsByKey.get("throughRoutePenalty"),
+      controlsByKey.get("strength"),
+      controlsByKey.get("maxSpeed"),
+    ].filter(Boolean),
+  };
+}
 
 export const scenarios = [
   {
@@ -1286,7 +1401,11 @@ export const scenarios = [
       { key: "fieldPersistence", label: "Trace persistence", min: 0.96, max: 0.999, step: 0.001, format: "percent" },
     ],
   },
-].map((scenario) => ({
+].flatMap((scenario) => (
+  scenario.id === "territory-growth"
+    ? [scenario, streetHierarchyVariant(scenario)]
+    : [scenario]
+)).map((scenario) => ({
   ...scenario,
   stage: scenario.stage || { number: "01", label: "Movement laboratory / 01" },
   summaryMetrics: scenario.summaryMetrics || [

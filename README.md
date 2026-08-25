@@ -26,6 +26,11 @@ desire paths, public streets, and territory.
   sustained narrow crossings can cut parcels into public right-of-way. Mature parcels
   beside surviving streets can become homes, markets, workshops, wells, or greens,
   adding new local trips to the movement pattern that first created their frontage.
+- **Street hierarchy · use earns capacity** — rerun Territory with one additional
+  feedback: current load maintains condition and grows usable capacity, quiet streets
+  narrow, and actual overload makes an aligned route locally less attractive. Variable
+  width and congestion marks make the resulting hierarchy visible without imposing a
+  grid or changing Territory's defaults.
 
 Useful controls include pause, single-step, same-seed reset, population, tempo,
 relationship overlays, delayed sensing, and drag-to-perturb interventions.
@@ -40,7 +45,13 @@ npm run dev       # open http://127.0.0.1:4173
 npm test          # run deterministic simulation tests
 npm run build     # write the deployable site to dist/
 npm run check     # test and build
+npm run evaluate:territory  # run the four-seed, 2400-tick Territory probe
 ```
+
+The evaluator accepts `--scenario street-hierarchy`, `--seeds`, `--ticks`,
+`--window`, `--distance`, `--population`, and `--json`. Its default stuck-walker probe
+means no completed trip and less than 25 world units of displacement during the final
+200 ticks.
 
 The server listens on the LAN by default. Use `HOST=127.0.0.1 npm run dev` to keep
 it local, or set `PORT=8080` to use another port.

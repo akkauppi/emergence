@@ -141,7 +141,9 @@ a deposited/decaying footfall grid, behavior-level field sensing, a rendered hea
 trip counts, and trail concentration. Its local navigation rule handles multiple blocks
 and arbitrary gate directions deterministically without private agent memory. A bounded
 local field of view is now implemented in Territory 03; heterogeneous traveller
-preferences, congestion measures, and side-by-side comparison remain follow-ups.
+preferences and side-by-side presentation remain follow-ups. Street Hierarchy 04 now
+adds measured capacity and congestion as a separate comparison rather than changing
+this interaction slice.
 
 Measurements: polarization, connected components, trip length, detour ratio, trail concentration, density heat maps, and side-by-side metric histories.
 
@@ -278,14 +280,38 @@ Initial land sequence:
 This sequence retains deterministic cell-based tenure without forcing paths to inherit
 its orthogonal shape. Remaining depth includes affordability and budget locking,
 voluntary release and subdivision, non-grid parcel geometry, easement compensation,
-capacity and maintenance, explicit households and jobs, activity entry/exit decisions,
-and buildings. A plot claim or abstract activity still does not create a building.
+explicit households and jobs, activity entry/exit decisions, and buildings. Capacity
+and maintenance are deliberately absent from Territory itself and implemented in the
+separate comparison below. A plot claim or abstract activity still does not create a
+building.
 
 Measurements: parcel area, frontage, compactness, ownership concentration, travel use,
 journey detour distance and ratio, trace and street counts, promotions and degenerations,
 easements and acquired rights-of-way, road cells and growth, network components,
 reservations, occupancy rejections, parcel severances, active activities, local visits,
 and road/plot conflicts.
+
+#### Street Hierarchy 04 — use earns capacity
+
+This adjacent preset copies Territory's movement, tenure, activity, and easement policy
+and adds one optional circulation feedback:
+
+1. A newly established continuous street receives bounded design capacity and condition.
+2. Current load maintains condition; demand above usable capacity incrementally invests
+   in design capacity.
+3. A quiet tick deteriorates condition and removes capacity down to a floor.
+4. Effective capacity combines design and condition, controls rendered line width, and
+   converts current load into congestion.
+5. Only this preset lets bounded local wayfinding prefer maintained aligned streets and
+   penalize aligned streets above actual capacity.
+
+The feedback is stored on the angle-preserving continuous flow segments, not on the
+cadastral support grid, so wider streets do not become orthogonal blocks. Primary,
+secondary, and path styling derives from earned capacity. The frame adds mean and maximum
+usable capacity, condition, congestion, overload share, and maintenance share. The
+multi-seed evaluator adds a late mobility probe and use-weighted route-diversity
+measurements; details and current reference values are in the
+[research notes](RESEARCH.md).
 
 #### Modeling rationale and organic-growth directions
 
@@ -311,6 +337,10 @@ prescribing either morphology, as explored in
 [urban morphogenesis models](https://journals.plos.org/plosone/article?id=10.1371%2Fjournal.pone.0203516).
 
 ### Stage 4 — Urban growth laboratory
+
+Street Hierarchy 04 is the first bounded comparison in this stage. It tests whether
+current movement alone can create differentiated street widths without adding
+households, budgets, or buildings. It is not the capstone described below.
 
 Let movement and settlement reshape one another:
 
@@ -378,7 +408,8 @@ Conflicting actions are grouped by target and resolved centrally. A reservation 
   formation/release, shared road/plot arbitration, and a cardinal legal support network
   behind continuous street geometry (implemented foundation)
 - Derive variable-width street geometry, hierarchy, capacity, and condition from the
-  cell network and its accumulated use
+  continuous movement network and its current load (implemented comparison in Street
+  Hierarchy 04; calibration remains)
 - Building footprints, occupation, and plot subdivision
 - Agent budgets and the coupling of affordability, claims, and settlement
 - Markets, gates, water, walls, terrain, and multiple livelihood strategies

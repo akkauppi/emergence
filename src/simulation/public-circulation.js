@@ -21,6 +21,91 @@ function integerIn(value, fallback, minimum, maximum) {
   return clamp(Math.round(finiteOr(value, fallback)), minimum, maximum);
 }
 
+function mean(values) {
+  return values.length > 0
+    ? values.reduce((sum, value) => sum + value, 0) / values.length
+    : 0;
+}
+
+function normalizeHierarchyConfig(input, flowPathThreshold) {
+  const source = input?.hierarchy;
+  if (!source || typeof source !== "object" || source.enabled === false) return null;
+  const minimumCapacity = clamp(finiteOr(source.minimumCapacity, 1), 0.1, 1_000);
+  const initialCapacity = clamp(
+    finiteOr(source.initialCapacity, Math.max(minimumCapacity, flowPathThreshold * 0.55)),
+    minimumCapacity,
+    1_000,
+  );
+  const maximumCapacity = clamp(
+    finiteOr(source.maximumCapacity, Math.max(initialCapacity, flowPathThreshold * 2.5)),
+    initialCapacity,
+    10_000,
+  );
+  return Object.freeze({
+    enabled: true,
+    minimumCapacity,
+    initialCapacity,
+    maximumCapacity,
+    initialCondition: clamp(finiteOr(source.initialCondition, 0.65), 0, 1),
+    conditionCapacityFloor: clamp(finiteOr(source.conditionCapacityFloor, 0.4), 0.05, 1),
+    maintenanceLoad: clamp(finiteOr(source.maintenanceLoad, 0.5), 0, 1_000),
+    investmentThreshold: clamp(finiteOr(source.investmentThreshold, 0.8), 0.05, 2),
+    investmentRate: clamp(finiteOr(source.investmentRate, 0.035), 0, 10),
+    capacityDecay: clamp(finiteOr(source.capacityDecay, 0.012), 0, 100),
+    maintenanceRate: clamp(finiteOr(source.maintenanceRate, 0.018), 0, 1),
+    deteriorationRate: clamp(finiteOr(source.deteriorationRate, 0.004), 0, 1),
+    samplingRadius: integerIn(source.samplingRadius, 1, 0, 4),
+  });
+}
+
+function effectiveFlowCapacity(capacity, condition, hierarchy) {
+  const conditionEffect = hierarchy.conditionCapacityFloor
+    + (1 - hierarchy.conditionCapacityFloor) * clamp(condition, 0, 1);
+  return Math.max(0.1, capacity * conditionEffect);
+}
+
+function updateFlowHierarchy(segment, hierarchy, street, wasStreet) {
+  if (!hierarchy) return;
+  let capacity = clamp(
+    finiteOr(segment.capacity, street ? hierarchy.initialCapacity : hierarchy.minimumCapacity),
+    hierarchy.minimumCapacity,
+    hierarchy.maximumCapacity,
+  );
+  let condition = clamp(
+    finiteOr(segment.condition, street ? hierarchy.initialCondition : 0),
+    0,
+    1,
+  );
+  if (!street) {
+    capacity = hierarchy.minimumCapacity;
+    condition = 0;
+  } else {
+    if (!wasStreet) {
+      capacity = Math.max(capacity, hierarchy.initialCapacity);
+      condition = Math.max(condition, hierarchy.initialCondition);
+    }
+    const maintained = segment.load >= hierarchy.maintenanceLoad;
+    condition = maintained
+      ? Math.min(1, condition + hierarchy.maintenanceRate * (1 - condition))
+      : Math.max(0, condition - hierarchy.deteriorationRate);
+    const usableBeforeInvestment = effectiveFlowCapacity(capacity, condition, hierarchy);
+    const investmentFloor = usableBeforeInvestment * hierarchy.investmentThreshold;
+    if (segment.load > investmentFloor) {
+      capacity = Math.min(
+        hierarchy.maximumCapacity,
+        capacity + (segment.load - investmentFloor) * hierarchy.investmentRate,
+      );
+    } else if (!maintained) {
+      capacity = Math.max(hierarchy.minimumCapacity, capacity - hierarchy.capacityDecay);
+    }
+  }
+  const effectiveCapacity = effectiveFlowCapacity(capacity, condition, hierarchy);
+  segment.capacity = capacity;
+  segment.condition = condition;
+  segment.effectiveCapacity = effectiveCapacity;
+  segment.congestion = street ? segment.load / effectiveCapacity : 0;
+}
+
 function compareIds(first, second) {
   return String(first).localeCompare(String(second));
 }
@@ -76,6 +161,7 @@ export function normalizeCirculationConfig(input) {
     0.1,
     1_000_000,
   );
+  const hierarchy = normalizeHierarchyConfig(input, flowPathThreshold);
   return Object.freeze({
     enabled: true,
     sourceLayer: String(input.sourceLayer ?? input.source?.layer ?? "land"),
@@ -129,6 +215,7 @@ export function normalizeCirculationConfig(input) {
     ),
     easementAcquisitionTicks: integerIn(input.easementAcquisitionTicks, 15, 1, 1_000_000),
     easementReleaseTicks: integerIn(input.easementReleaseTicks, 120, 1, 1_000_000),
+    ...(hierarchy ? { hierarchy } : {}),
   });
 }
 
@@ -218,6 +305,7 @@ export class PublicCirculation {
   #indexById;
   #cellById;
   #viewCache;
+  #flowViewCache;
 
   constructor(config, { land, seed = 0, worldWidth = 1_000, worldHeight = 650 } = {}) {
     this.config = normalizeCirculationConfig(config);
@@ -295,6 +383,7 @@ export class PublicCirculation {
       })];
     }));
     this.#viewCache = null;
+    this.#flowViewCache = null;
     return this.frame();
   }
 
@@ -358,6 +447,103 @@ export class PublicCirculation {
     })));
     this.#viewCache = { revision: this.revision, landRevision, cells: observed };
     return observed;
+  }
+
+  #observedHierarchyFlows() {
+    if (!this.config.hierarchy) return null;
+    if (this.#flowViewCache?.revision === this.revision) return this.#flowViewCache;
+    const hierarchy = this.config.hierarchy;
+    const range = Math.max(EPSILON, hierarchy.maximumCapacity - hierarchy.minimumCapacity);
+    const candidatesByQuery = new Map();
+    const candidatesByCell = new Map();
+    const append = (map, key, value) => {
+      if (!map.has(key)) map.set(key, []);
+      map.get(key).push(value);
+    };
+    for (const [key, segment] of this.flowSegments) {
+      if (!segment.street) continue;
+      const capacity = clamp(
+        finiteOr(segment.capacity, hierarchy.initialCapacity),
+        hierarchy.minimumCapacity,
+        hierarchy.maximumCapacity,
+      );
+      const condition = clamp(finiteOr(segment.condition, hierarchy.initialCondition), 0, 1);
+      const effectiveCapacity = Math.max(
+        0.1,
+        finiteOr(segment.effectiveCapacity, effectiveFlowCapacity(capacity, condition, hierarchy)),
+      );
+      const observed = Object.freeze({
+        id: `flow-edge:${key}`,
+        x: segment.x,
+        y: segment.y,
+        angle: Math.atan2(segment.axisY, segment.axisX) / 2,
+        street: true,
+        use: segment.use,
+        load: segment.load,
+        capacity,
+        effectiveCapacity,
+        condition,
+        congestion: Math.max(0, finiteOr(segment.congestion, segment.load / effectiveCapacity)),
+        relativeCapacity: clamp((capacity - hierarchy.minimumCapacity) / range, 0, 1),
+      });
+      const [segmentColumn, segmentRow, segmentBin] = key.split(":").map(Number);
+      const desiredBins = new Set();
+      for (let offset = -2; offset <= 2; offset += 1) {
+        desiredBins.add((segmentBin - offset + this.config.flowAngleBins) % this.config.flowAngleBins);
+      }
+      for (let rowOffset = -hierarchy.samplingRadius; rowOffset <= hierarchy.samplingRadius; rowOffset += 1) {
+        for (let columnOffset = -hierarchy.samplingRadius; columnOffset <= hierarchy.samplingRadius; columnOffset += 1) {
+          const queryColumn = segmentColumn - columnOffset;
+          const queryRow = segmentRow - rowOffset;
+          const cellKey = `${queryColumn}:${queryRow}`;
+          append(candidatesByCell, cellKey, observed);
+          for (const desiredBin of desiredBins) {
+            append(candidatesByQuery, `${cellKey}:${desiredBin}`, observed);
+          }
+        }
+      }
+    }
+    this.#flowViewCache = { revision: this.revision, candidatesByQuery, candidatesByCell };
+    return this.#flowViewCache;
+  }
+
+  #flowAt(position, direction = null) {
+    const hierarchy = this.config.hierarchy;
+    const point = pointOf(position);
+    if (!hierarchy || !point) return null;
+    const vector = pointOf(direction);
+    const vectorLength = vector ? Math.hypot(vector.x, vector.y) : 0;
+    let desiredAngle = vectorLength > EPSILON ? Math.atan2(vector.y, vector.x) : null;
+    if (desiredAngle !== null) {
+      if (desiredAngle < 0) desiredAngle += Math.PI;
+      if (desiredAngle >= Math.PI) desiredAngle -= Math.PI;
+    }
+    const resolution = this.config.flowResolution;
+    const bins = this.config.flowAngleBins;
+    const column = Math.floor(point.x / resolution);
+    const row = Math.floor(point.y / resolution);
+    const desiredBin = desiredAngle === null ? 0 : Math.floor(desiredAngle / Math.PI * bins);
+    const observed = this.#observedHierarchyFlows();
+    const candidates = desiredAngle === null
+      ? observed.candidatesByCell.get(`${column}:${row}`) ?? []
+      : observed.candidatesByQuery.get(`${column}:${row}:${desiredBin}`) ?? [];
+    let best = null;
+    let bestScore = Infinity;
+    for (const candidate of candidates) {
+      const distance = Math.hypot(point.x - candidate.x, point.y - candidate.y);
+      if (distance > resolution * (hierarchy.samplingRadius + 0.8)) continue;
+      const alignment = desiredAngle === null
+        ? 1
+        : Math.abs(Math.cos(candidate.angle - desiredAngle));
+      if (alignment < Math.cos(Math.PI / 4)) continue;
+      const score = distance / resolution + (1 - alignment) * 1.5;
+      if (score < bestScore - EPSILON
+        || (Math.abs(score - bestScore) <= EPSILON && compareIds(candidate.id, best?.id) < 0)) {
+        best = candidate;
+        bestScore = score;
+      }
+    }
+    return best;
   }
 
   #nearestTraversableCell(position, excludedIndex = -1) {
@@ -520,6 +706,9 @@ export class PublicCirculation {
       fronted: (landId) => this.fronted(landId),
       route,
       canReach: (landId) => route(landId).reachable,
+      ...(this.config.hierarchy
+        ? { flow: (point, direction = null) => this.#flowAt(point, direction) }
+        : {}),
     });
   }
 
@@ -582,11 +771,12 @@ export class PublicCirculation {
 
   #stageFlow(canonical, tick) {
     const persistence = this.config.flowPersistence;
+    const hierarchy = this.config.hierarchy ?? null;
     const next = new Map();
     for (const [key, segment] of this.flowSegments) {
       const use = segment.use * persistence;
       if (use < FLOW_MINIMUM_USE && !segment.street && (segment.formationTicks ?? 0) <= 0) continue;
-      next.set(key, {
+      const retained = {
         key: segment.key,
         x: segment.x,
         y: segment.y,
@@ -597,7 +787,14 @@ export class PublicCirculation {
         street: segment.street,
         formationTicks: segment.formationTicks,
         quietTicks: segment.quietTicks,
-      });
+      };
+      if (hierarchy) {
+        retained.capacity = segment.capacity;
+        retained.condition = segment.condition;
+        retained.effectiveCapacity = segment.effectiveCapacity;
+        retained.congestion = 0;
+      }
+      next.set(key, retained);
     }
 
     const resolution = this.config.flowResolution;
@@ -627,7 +824,7 @@ export class PublicCirculation {
         existing.use = use;
         existing.load += 1;
       } else {
-        next.set(key, {
+        const created = {
           key,
           x: midpointX,
           y: midpointY,
@@ -638,7 +835,18 @@ export class PublicCirculation {
           street: false,
           formationTicks: 0,
           quietTicks: 0,
-        });
+        };
+        if (hierarchy) {
+          created.capacity = hierarchy.minimumCapacity;
+          created.condition = 0;
+          created.effectiveCapacity = effectiveFlowCapacity(
+            hierarchy.minimumCapacity,
+            0,
+            hierarchy,
+          );
+          created.congestion = 0;
+        }
+        next.set(key, created);
       }
     }
 
@@ -647,6 +855,7 @@ export class PublicCirculation {
     let degenerations = 0;
     for (const [key, segment] of next) {
       let street = segment.street === true;
+      const wasStreet = street;
       let formationTicks = segment.formationTicks ?? 0;
       let quietTicks = segment.quietTicks ?? 0;
       if (street) {
@@ -687,6 +896,7 @@ export class PublicCirculation {
       segment.street = street;
       segment.formationTicks = formationTicks;
       segment.quietTicks = quietTicks;
+      updateFlowHierarchy(segment, hierarchy, street, wasStreet);
     }
 
     const limited = next.size <= MAX_FLOW_FEATURES
@@ -1340,6 +1550,7 @@ export class PublicCirculation {
     this.lastEvents = freezeArray(events);
     this.revision += 1;
     this.#viewCache = null;
+    this.#flowViewCache = null;
     transitionStates.delete(transition);
     return returnFrame ? this.frame() : null;
   }
@@ -1385,10 +1596,43 @@ export class PublicCirculation {
       }
     }
     const capacity = Math.max(1, this.config.reserveThreshold);
-    const activeFlowEdges = [...this.flowSegments.values()]
+    const flowSegments = [...this.flowSegments.values()];
+    const activeFlowEdges = flowSegments
       .filter((segment) => segment.use >= this.config.flowTraceThreshold).length;
-    const establishedFlowEdges = [...this.flowSegments.values()]
-      .filter((segment) => segment.street).length;
+    const establishedSegments = flowSegments.filter((segment) => segment.street);
+    const establishedFlowEdges = establishedSegments.length;
+    const hierarchy = this.config.hierarchy ?? null;
+    const hierarchyMetrics = hierarchy ? (() => {
+      const capacities = establishedSegments.map((segment) => Math.max(
+        0.1,
+        finiteOr(
+          segment.effectiveCapacity,
+          effectiveFlowCapacity(segment.capacity, segment.condition, hierarchy),
+        ),
+      ));
+      const conditions = establishedSegments.map((segment) => clamp(
+        finiteOr(segment.condition, hierarchy.initialCondition),
+        0,
+        1,
+      ));
+      const congestion = establishedSegments.map((segment, index) => (
+        segment.load / capacities[index]
+      ));
+      return {
+        meanFlowCapacity: mean(capacities),
+        maxFlowCapacity: capacities.length > 0 ? Math.max(...capacities) : 0,
+        meanFlowCondition: mean(conditions),
+        meanFlowCongestion: mean(congestion),
+        maxFlowCongestion: congestion.length > 0 ? Math.max(...congestion) : 0,
+        overloadedFlowShare: establishedFlowEdges > 0
+          ? congestion.filter((ratio) => ratio >= 1).length / establishedFlowEdges
+          : 0,
+        maintainedFlowShare: establishedFlowEdges > 0
+          ? establishedSegments.filter((segment) => segment.load >= hierarchy.maintenanceLoad).length
+            / establishedFlowEdges
+          : 0,
+      };
+    })() : null;
     const easementCount = this.easementByCell.reduce((count, active) => count + (active ? 1 : 0), 0);
     const journeys = [...this.journeyByAgent.values()];
     const totalDetourDistance = journeys.reduce((sum, journey) => sum + journey.detourDistance, 0);
@@ -1422,6 +1666,7 @@ export class PublicCirculation {
       streetPopulation: totalPublicLoad,
       activeFlowEdges,
       establishedFlowEdges,
+      ...(hierarchyMetrics ?? {}),
       easementCount,
       acquiredRightOfWays,
       easementAcquisitions: this.counters.easementAcquisitions,
@@ -1484,6 +1729,7 @@ export class PublicCirculation {
           ? "right-of-way"
           : "road",
     })));
+    const flowHierarchy = this.config.hierarchy ?? null;
     const edges = [...this.flowSegments.values()]
       .filter((segment) => segment.street || segment.use >= this.config.flowTraceThreshold)
       .map((segment) => {
@@ -1492,6 +1738,20 @@ export class PublicCirculation {
         const unitY = Math.sin(angle);
         const halfLength = this.config.flowResolution * 0.9;
         const established = segment.street === true;
+        const capacity = flowHierarchy && established
+          ? Math.max(0.1, finiteOr(
+            segment.effectiveCapacity,
+            effectiveFlowCapacity(segment.capacity, segment.condition, flowHierarchy),
+          ))
+          : Math.max(1, this.config.flowPathThreshold);
+        const relativeCapacity = flowHierarchy && established
+          ? clamp(
+            (finiteOr(segment.capacity, flowHierarchy.initialCapacity) - flowHierarchy.minimumCapacity)
+              / Math.max(EPSILON, flowHierarchy.maximumCapacity - flowHierarchy.minimumCapacity),
+            0,
+            1,
+          )
+          : 0;
         return Object.freeze({
           id: `flow-edge:${segment.key}`,
           from: null,
@@ -1502,15 +1762,28 @@ export class PublicCirculation {
           y2: clamp(segment.y + unitY * halfLength, 0, this.worldHeight),
           length: halfLength * 2,
           width: established
-            ? clamp(3.5 + Math.log1p(segment.use) * 1.35, 4, 11)
+            ? flowHierarchy
+              ? clamp(3.4 + capacity * 1.5, 4, 13)
+              : clamp(3.5 + Math.log1p(segment.use) * 1.35, 4, 11)
             : clamp(0.9 + Math.log1p(segment.use) * 0.5, 1.1, 2.2),
-          hierarchy: established && segment.use >= this.config.flowPathThreshold * 2
-            ? "secondary" : "path",
+          hierarchy: established && flowHierarchy && relativeCapacity >= 0.65
+            ? "primary"
+            : established && (
+              flowHierarchy
+                ? relativeCapacity >= 0.2
+                : segment.use >= this.config.flowPathThreshold * 2
+            ) ? "secondary" : "path",
           status: established ? "road" : "trace",
           load: segment.load,
           use: segment.use,
-          capacity: Math.max(1, this.config.flowPathThreshold),
-          congestion: segment.load / Math.max(1, this.config.flowPathThreshold),
+          capacity,
+          congestion: established && flowHierarchy
+            ? Math.max(0, finiteOr(segment.congestion, segment.load / capacity))
+            : segment.load / capacity,
+          ...(established && flowHierarchy ? {
+            condition: clamp(finiteOr(segment.condition, flowHierarchy.initialCondition), 0, 1),
+            designCapacity: finiteOr(segment.capacity, flowHierarchy.initialCapacity),
+          } : {}),
           flow: true,
         });
       });

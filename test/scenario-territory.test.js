@@ -5,6 +5,7 @@ import { getScenario, scenarios } from "../src/scenarios.js";
 import { compileBehavior } from "../src/simulation/compiler.js";
 
 const scenario = getScenario("territory-growth");
+const hierarchyScenario = getScenario("street-hierarchy");
 
 function cell(id, x, y, attributes = {}, tenure = {}) {
   return {
@@ -55,6 +56,7 @@ function runBehavior({
   circulationCells = {},
   routes = {},
   publicIds = [],
+  flowSample = undefined,
   params = {},
 } = {}) {
   const behavior = compileBehavior(scenario.source);
@@ -93,6 +95,7 @@ function runBehavior({
       usage: (id) => circulationCells[String(id)]?.use ?? 0,
       isPublic: (id) => publicSet.has(String(id)),
       fronted: (id) => circulationCells[String(id)]?.fronted !== false,
+      ...(typeof flowSample === "function" ? { flow: flowSample } : {}),
       route: (id) => {
         const landId = String(id);
         routeCalls.push(landId);
@@ -202,6 +205,26 @@ test("territory scenario couples an ordinary land grid to journeys, traces, and 
   assert.equal(scenario.params.maximumSiteUse, 8);
 });
 
+test("street hierarchy is an adjacent comparison and leaves Territory's policy disabled", () => {
+  const territoryIndex = scenarios.indexOf(scenario);
+  assert.equal(scenarios[territoryIndex + 1], hierarchyScenario);
+  assert.deepEqual(hierarchyScenario.stage, {
+    number: "04",
+    label: "Street hierarchy laboratory / 04",
+  });
+  assert.equal(scenario.environment.circulation.hierarchy, undefined);
+  assert.equal(hierarchyScenario.environment.circulation.hierarchy.enabled, true);
+  assert.equal(hierarchyScenario.environment.circulation.hierarchy.maximumCapacity, 6);
+  assert.equal(hierarchyScenario.params.capacityPreference, 0.65);
+  assert.equal(hierarchyScenario.params.congestionAvoidance, 0.8);
+  assert.deepEqual(
+    hierarchyScenario.summaryMetrics.map(({ key }) => key),
+    ["meanFlowCapacity", "overloadedFlowShare"],
+  );
+  assert.equal(hierarchyScenario.metric.key, "meanFlowCondition");
+  assert.equal(typeof compileBehavior(hierarchyScenario.source), "function");
+});
+
 test("walking follows desire lines while settlement favors busy public frontage", () => {
   const quiet = cell("land-7-2", 100, 300, { access: 0.4, amenity: 0.3 });
   const busy = cell("land-7-1", 60, 300, { access: 0.4, amenity: 0.3 });
@@ -249,6 +272,31 @@ test("local traces can bend a walker's next step inside the forward view", () =>
   assert.ok(seekTargets[0].y < 325);
   const angle = Math.abs(Math.atan2(seekTargets[0].y - 325, seekTargets[0].x - 80));
   assert.ok(angle <= scenario.params.viewAngle * Math.PI / 360 + 0.000001);
+});
+
+test("hierarchy feedback makes an overloaded aligned street locally less attractive", () => {
+  const { seekTargets } = runBehavior({
+    cells: undefined,
+    params: {
+      trailInfluence: 0,
+      capacityPreference: 0,
+      congestionAvoidance: 3,
+    },
+    flowSample: (_point, direction) => (
+      Math.abs(direction.y) < 1
+        ? {
+          street: true,
+          condition: 1,
+          relativeCapacity: 1,
+          congestion: 3,
+        }
+        : null
+    ),
+  });
+
+  assert.equal(seekTargets.length, 1);
+  assert.ok(Math.abs(seekTargets[0].y - 325) > 1);
+  assert.ok(seekTargets[0].x > 80);
 });
 
 test("a nearby claimed block redirects the local step without exposing a complete route", () => {
