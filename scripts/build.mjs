@@ -9,4 +9,4 @@ await mkdir(output, { recursive: true });
 await cp(`${root}index.html`, `${output}index.html`);
 await cp(`${root}src`, `${output}src`, { recursive: true });
 
-console.log("Built the dependency-free static app in dist/");
+console.log("Built the static app in dist/");

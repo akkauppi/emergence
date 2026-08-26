@@ -21,7 +21,10 @@
     "simulation"
   ],
   "scripts": {
+    "bundle:life-solver": "node scripts/bundle-life-solver.mjs",
+    "predev": "npm run bundle:life-solver",
     "dev": "node scripts/dev-server.mjs",
+    "prebuild": "npm run bundle:life-solver",
     "build": "node scripts/build.mjs",
     "test": "node --test",
     "evaluate:territory": "node scripts/evaluate-territory.mjs",
@@ -30,5 +33,11 @@
   },
   "engines": {
     "node": ">=20"
+  },
+  "dependencies": {
+    "logic-solver-plus": "0.2.2"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
   }
 }

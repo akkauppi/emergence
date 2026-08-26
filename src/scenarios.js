@@ -1401,6 +1401,46 @@ export const scenarios = [
       { key: "fieldPersistence", label: "Trace persistence", min: 0.96, max: 0.999, step: 0.001, format: "percent" },
     ],
   },
+  {
+    id: "reverse-life",
+    kind: "life",
+    title: "Conway's Life · forward and reverse",
+    shortTitle: "Run Life forward, solve it backward",
+    kicker: "Constraint archaeology",
+    stage: { number: "05", label: "Solver laboratory / 05" },
+    description:
+      "Ordinary Conway's Life turns one generation into exactly one successor. Reversing that arrow is a constraint problem: a target may have many predecessors, one predecessor, or none at all. Draw a target and let MiniSat search the possible past.",
+    steps: [
+      "Count the eight neighboring cells",
+      "Birth with three; survive with two",
+      "Fix every cell in a target generation",
+      "Solve, then run the answer forward",
+    ],
+    question:
+      "Can you predict which familiar objects have a sparse predecessor? Ask for another answer, edit one target cell, or try to construct a finite Garden of Eden with no possible past.",
+    relationMode: "none",
+    source: "",
+    environment: {},
+    params: {},
+    controls: [],
+    summaryMetrics: [
+      { label: "Live cells", key: "population", format: "count", detail: "current generation" },
+      { label: "Births next", key: "births", format: "count", detail: "dead cells with three neighbors" },
+    ],
+    metric: {
+      label: "Deaths next",
+      key: "deaths",
+      format: "count",
+      fallback: "0",
+      detail: "under- or over-population",
+    },
+    trend: {
+      label: "Population history",
+      key: "population",
+      ariaLabel: "Recent live-cell population",
+      minimumRange: 4,
+    },
+  },
 ].flatMap((scenario) => (
   scenario.id === "territory-growth"
     ? [scenario, streetHierarchyVariant(scenario)]

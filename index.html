@@ -40,7 +40,7 @@
 
     <nav class="mobile-tabs" aria-label="Workspace view">
       <button class="mobile-tab is-active" data-tab="playground" type="button">Playground</button>
-      <button class="mobile-tab" data-tab="code" type="button">Code</button>
+      <button class="mobile-tab" id="workspace-detail-tab" data-tab="code" type="button">Code</button>
     </nav>
 
     <main class="workspace">
@@ -50,7 +50,7 @@
             <p class="eyebrow" id="lab-stage">Movement laboratory / 01</p>
             <h1 id="playground-title">Observe the whole, inspect a rule</h1>
           </div>
-          <div class="seed-control" title="Resetting with the same seed reproduces the same world">
+          <div class="seed-control" id="seed-control" title="Resetting with the same seed reproduces the same world">
             <span>Seed</span>
             <strong id="seed-value">2026</strong>
             <button id="new-seed-button" type="button" aria-label="Use next random seed">New</button>
@@ -80,6 +80,84 @@
             <span id="legend-c-item" hidden><i class="legend-c" aria-hidden="true"></i><span id="legend-c-label">conflict</span></span>
           </div>
         </div>
+
+        <section class="life-lab" id="life-lab" aria-label="Conway's Game of Life laboratory" hidden>
+          <header class="life-toolbar">
+            <div class="life-mode-switch" role="group" aria-label="Direction of experiment">
+              <button class="is-active" data-life-mode="forward" type="button" aria-pressed="true">
+                <span>→</span> Forward
+              </button>
+              <button data-life-mode="reverse" type="button" aria-pressed="false">
+                <span>←</span> Reverse
+              </button>
+            </div>
+            <label class="life-pattern-picker" for="life-pattern-select">
+              Known object
+              <select id="life-pattern-select"></select>
+            </label>
+            <div class="life-pattern-copy">
+              <strong id="life-pattern-name">Glider · Spaceship</strong>
+              <span id="life-pattern-fact">Moves one cell diagonally every four generations.</span>
+            </div>
+            <button class="button button-quiet life-clear" id="life-clear-button" type="button">Clear board</button>
+          </header>
+
+          <div class="life-stage" id="life-stage">
+            <article class="life-board-panel">
+              <header>
+                <div>
+                  <span id="life-left-kicker">Editable state</span>
+                  <strong id="life-left-title">Generation 0</strong>
+                </div>
+                <em id="life-left-count">5 live</em>
+              </header>
+              <canvas
+                id="life-left-canvas"
+                tabindex="0"
+                aria-label="Current Life generation. Click or drag to toggle cells in forward mode."
+              ></canvas>
+            </article>
+
+            <div class="life-rule-arrow" aria-hidden="true">
+              <span id="life-arrow-label">B3 / S23</span>
+              <strong>→</strong>
+            </div>
+
+            <article class="life-board-panel">
+              <header>
+                <div>
+                  <span id="life-right-kicker">Rule preview</span>
+                  <strong id="life-right-title">Generation 1</strong>
+                </div>
+                <em id="life-right-count">5 live</em>
+              </header>
+              <canvas
+                id="life-right-canvas"
+                tabindex="0"
+                aria-label="Next or target Life generation. Click or drag to toggle target cells in reverse mode."
+              ></canvas>
+            </article>
+          </div>
+
+          <div class="life-reverse-controls" id="life-reverse-controls" hidden>
+            <label for="life-objective-select">
+              Search objective
+              <select id="life-objective-select">
+                <option value="sparse" selected>Fewest live cells</option>
+                <option value="any">Any valid past</option>
+              </select>
+            </label>
+            <button class="button button-accent" id="life-solve-button" type="button">Find predecessor</button>
+            <button class="button button-quiet" id="life-another-button" type="button" disabled>Another answer</button>
+            <button class="button button-quiet" id="life-verify-button" type="button" disabled>Open forward proof →</button>
+          </div>
+          <p class="life-forward-note" id="life-forward-note">
+            Gold cells survive; green cells are births. The board is finite: everything outside it is permanently dead.
+          </p>
+          <p class="life-status" id="life-status" role="status" aria-live="polite">
+            Paint cells or choose an object, then advance one generation.
+          </p>
+        </section>
 
         <section class="layout-editor" id="layout-editor" aria-labelledby="layout-editor-title" hidden>
           <div class="layout-editor-heading">
@@ -164,7 +242,7 @@
           <p class="territory-policy" id="territory-policy">Repeated use establishes streets · quiet streets return to traces · costly detours open easements · sustained use makes them public.</p>
         </section>
 
-        <div class="metrics-strip" aria-label="Live simulation measurements">
+        <div class="metrics-strip" id="metrics-strip" aria-label="Live simulation measurements">
           <article class="metric">
             <span id="primary-metric-label">Group spread</span>
             <strong id="spread-value">—</strong>
@@ -191,7 +269,7 @@
           </article>
         </div>
 
-        <div class="control-deck">
+        <div class="control-deck" id="control-deck">
           <div class="transport-controls" aria-label="Simulation playback">
             <button class="button button-primary" id="play-button" type="button">
               <span id="play-icon" aria-hidden="true">▶</span>
@@ -201,7 +279,7 @@
             <button class="icon-button" id="reset-button" type="button" aria-label="Reset simulation" title="Reset with the same seed">↺</button>
           </div>
 
-          <div class="control-field">
+          <div class="control-field" id="tempo-control">
             <label for="speed-select">Tempo</label>
             <select id="speed-select">
               <option value="0.25">¼×</option>
@@ -212,7 +290,7 @@
             </select>
           </div>
 
-          <div class="control-field population-field">
+          <div class="control-field population-field" id="population-control">
             <label for="population-input"><span id="population-label">People</span> <output id="population-value">72</output></label>
             <input id="population-input" type="range" min="12" max="180" step="6" value="72" />
           </div>
@@ -248,12 +326,12 @@
         </section>
 
         <section class="rule-explainer" aria-label="Rule in plain language">
-          <p class="eyebrow">Every person repeats</p>
+          <p class="eyebrow" id="rule-loop-label">Every person repeats</p>
           <ol id="rule-steps"></ol>
           <p class="question-prompt" id="question-prompt"></p>
         </section>
 
-        <section class="editor-section">
+        <section class="editor-section" id="editor-section">
           <div class="editor-toolbar">
             <div>
               <span class="eyebrow">Agent program</span>
@@ -281,7 +359,35 @@
           </div>
         </section>
 
-        <details class="api-reference">
+        <section class="life-method" id="life-method" aria-labelledby="life-method-title" hidden>
+          <div class="life-method-heading">
+            <div>
+              <p class="eyebrow">MiniSat constraint model</p>
+              <h3 id="life-method-title">The future is fixed; the past is Boolean</h3>
+            </div>
+            <span class="language-pill">SAT</span>
+          </div>
+          <div class="life-formula" aria-label="Conway's Life transition formula">
+            <span>next alive</span>
+            <strong>⇔</strong>
+            <code>neighbors = 3</code>
+            <em>or</em>
+            <code>alive ∧ neighbors = 2</code>
+          </div>
+          <ol class="life-method-steps">
+            <li><strong>Declare</strong><span>one Boolean predecessor variable per board cell</span></li>
+            <li><strong>Constrain</strong><span>every target cell with the ordinary B3/S23 rule</span></li>
+            <li><strong>Verify</strong><span>run the model forward outside the solver before displaying it</span></li>
+          </ol>
+          <dl class="life-constraint-facts">
+            <div><dt>SAT variables</dt><dd id="life-constraint-variables">320+</dd></div>
+            <div><dt>CNF clauses</dt><dd id="life-constraint-clauses">generated on solve</dd></div>
+            <div><dt>Last result</dt><dd id="life-constraint-result">not solved</dd></div>
+          </dl>
+          <p class="trust-note">Boundary rule: cells outside the 20 × 16 board are fixed dead. “UNSAT” therefore means no predecessor exists under this explicit finite-board model.</p>
+        </section>
+
+        <details class="api-reference" id="api-reference">
           <summary>
             <span><i aria-hidden="true">{ }</i> Rule API</span>
             <span aria-hidden="true">＋</span>
@@ -316,7 +422,7 @@
         <header>
           <div>
             <p class="eyebrow">From movement to morphology</p>
-            <h2>A four-stage teaching toolbox</h2>
+            <h2>A five-stage teaching toolbox</h2>
           </div>
           <button class="dialog-close" value="close" aria-label="Close roadmap">×</button>
         </header>
@@ -344,6 +450,11 @@
             <span>04</span>
             <div><strong>Urban growth laboratory</strong><p>Street use now earns capacity; buildings, budgets, walls and detailed land use remain capstone work.</p></div>
             <em>Growing</em>
+          </li>
+          <li class="is-current">
+            <span>05</span>
+            <div><strong>Solver laboratory</strong><p>Run cellular automata forward, then turn their local transition rule into a visual SAT problem and search possible histories.</p></div>
+            <em>Experiment</em>
           </li>
         </ol>
         <footer>

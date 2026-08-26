@@ -480,6 +480,280 @@ body[data-scenario="territory-growth"] .legend-b {
   background: linear-gradient(90deg, #70a4f4, #ef9661, #75cda5, #d38bdd);
 }
 
+.life-lab {
+  min-height: 470px;
+  margin: 0 14px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 17px;
+  color: rgba(241, 246, 255, 0.88);
+  background:
+    radial-gradient(circle at 18% 0%, rgba(167, 185, 255, 0.1), transparent 35%),
+    radial-gradient(circle at 90% 100%, rgba(115, 215, 181, 0.08), transparent 35%),
+    #101b2d;
+  box-shadow: inset 0 0 0 1px rgba(10, 17, 29, 0.3), 0 10px 24px rgba(23, 36, 58, 0.18);
+}
+
+.life-toolbar {
+  display: grid;
+  grid-template-columns: auto minmax(155px, 0.65fr) minmax(180px, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 13px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(7, 14, 25, 0.42);
+}
+
+.life-mode-switch {
+  display: flex;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.life-mode-switch button {
+  min-height: 32px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  color: rgba(255, 255, 255, 0.56);
+  background: transparent;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.life-mode-switch button span {
+  margin-right: 3px;
+  font-family: var(--font-mono);
+}
+
+.life-mode-switch button.is-active {
+  color: white;
+  background: #315cdd;
+  box-shadow: 0 4px 12px rgba(17, 36, 88, 0.5);
+}
+
+.life-pattern-picker,
+.life-reverse-controls label {
+  display: grid;
+  gap: 3px;
+  color: rgba(255, 255, 255, 0.44);
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.life-pattern-picker select,
+.life-reverse-controls select {
+  min-width: 0;
+  height: 32px;
+  padding: 0 27px 0 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 7px;
+  color: rgba(255, 255, 255, 0.86);
+  background: #18263c;
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.life-pattern-picker option,
+.life-reverse-controls option {
+  color: white;
+  background: #18263c;
+}
+
+.life-pattern-copy {
+  min-width: 0;
+}
+
+.life-pattern-copy strong,
+.life-pattern-copy span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.life-pattern-copy strong {
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 10px;
+}
+
+.life-pattern-copy span {
+  margin-top: 2px;
+  color: rgba(255, 255, 255, 0.42);
+  font-size: 8px;
+}
+
+.life-clear {
+  min-height: 34px;
+  color: rgba(255, 255, 255, 0.7);
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.05);
+  font-size: 9px;
+}
+
+.life-clear:hover {
+  color: white;
+  border-color: rgba(255, 255, 255, 0.24);
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.life-stage {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 54px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 14px 13px 9px;
+}
+
+.life-board-panel {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  background: rgba(7, 14, 25, 0.46);
+  box-shadow: 0 7px 20px rgba(0, 0, 0, 0.12);
+}
+
+.life-board-panel > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 43px;
+  padding: 7px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.life-board-panel > header span,
+.life-board-panel > header strong {
+  display: block;
+}
+
+.life-board-panel > header span {
+  color: rgba(255, 255, 255, 0.36);
+  font-size: 7px;
+  font-weight: 800;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+}
+
+.life-board-panel > header strong {
+  margin-top: 1px;
+  color: rgba(255, 255, 255, 0.87);
+  font-size: 11px;
+}
+
+.life-board-panel > header em {
+  flex: none;
+  color: #f2bd55;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-style: normal;
+}
+
+.life-board-panel canvas {
+  display: block;
+  width: 100%;
+  aspect-ratio: 20 / 16;
+  background: #111d30;
+  touch-action: none;
+}
+
+.life-board-panel canvas.is-editable {
+  cursor: crosshair;
+}
+
+.life-board-panel canvas:focus-visible {
+  outline: 2px solid #7d99ff;
+  outline-offset: -3px;
+}
+
+.life-rule-arrow {
+  display: grid;
+  justify-items: center;
+  gap: 3px;
+  color: rgba(255, 255, 255, 0.3);
+}
+
+.life-rule-arrow span {
+  font-size: 7px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.life-rule-arrow strong {
+  color: #7e9aff;
+  font-family: var(--font-mono);
+  font-size: 24px;
+  line-height: 1;
+}
+
+.life-reverse-controls {
+  display: flex;
+  align-items: end;
+  gap: 7px;
+  padding: 1px 13px 8px;
+}
+
+.life-reverse-controls label {
+  width: min(190px, 30%);
+}
+
+.life-reverse-controls .button {
+  min-height: 34px;
+  font-size: 9px;
+}
+
+.life-forward-note,
+.life-status {
+  margin: 0 13px;
+  font-size: 8px;
+  line-height: 1.45;
+}
+
+.life-forward-note {
+  padding: 1px 0 7px;
+  color: rgba(255, 255, 255, 0.39);
+}
+
+.life-status {
+  min-height: 27px;
+  padding: 7px 9px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  color: rgba(255, 255, 255, 0.6);
+  background: rgba(255, 255, 255, 0.025);
+  font-family: var(--font-mono);
+}
+
+.life-status.is-solving {
+  color: #c7d3ff;
+}
+
+.life-status.is-solving::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border: 1px solid #89a0f5;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: life-spin 700ms linear infinite;
+}
+
+@keyframes life-spin {
+  to { transform: rotate(360deg); }
+}
+
 .layout-editor {
   margin: 10px 14px 0;
   padding: 10px 11px;
@@ -907,6 +1181,14 @@ body[data-scenario="territory-growth"] .metric-with-chart {
   background: linear-gradient(90deg, rgba(117, 98, 212, 0.045), rgba(117, 98, 212, 0.12));
 }
 
+body[data-scenario="reverse-life"] #metric-line {
+  stroke: #315cdd;
+}
+
+body[data-scenario="reverse-life"] .metric-with-chart {
+  background: linear-gradient(90deg, rgba(49, 92, 221, 0.045), rgba(115, 215, 181, 0.1));
+}
+
 .control-deck {
   display: flex;
   align-items: center;
@@ -1283,6 +1565,143 @@ input[type="range"] {
   flex: 1;
 }
 
+.life-method {
+  padding: 17px 18px 18px;
+}
+
+.life-method-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.life-method-heading h3 {
+  margin: 0;
+  font-size: 15px;
+  letter-spacing: -0.02em;
+}
+
+.life-formula {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid rgba(49, 92, 221, 0.18);
+  border-radius: 10px;
+  background: linear-gradient(120deg, rgba(228, 234, 255, 0.55), rgba(240, 250, 246, 0.65));
+  font-size: 9px;
+}
+
+.life-formula span {
+  font-weight: 850;
+}
+
+.life-formula strong {
+  color: var(--blue);
+  font-family: var(--font-mono);
+  font-size: 14px;
+}
+
+.life-formula code {
+  padding: 4px 6px;
+  border: 1px solid rgba(23, 36, 58, 0.08);
+  border-radius: 5px;
+  color: #31445f;
+  background: rgba(255, 255, 255, 0.68);
+  font-family: var(--font-mono);
+}
+
+.life-formula em {
+  color: var(--ink-faint);
+  font-size: 8px;
+  font-style: normal;
+  text-transform: uppercase;
+}
+
+.life-method-steps {
+  display: grid;
+  gap: 7px;
+  margin: 13px 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: solver-step;
+}
+
+.life-method-steps li {
+  display: grid;
+  grid-template-columns: 20px 52px minmax(0, 1fr);
+  gap: 8px;
+  padding: 8px 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 253, 248, 0.7);
+  color: var(--ink-soft);
+  font-size: 9px;
+  counter-increment: solver-step;
+}
+
+.life-method-steps li::before {
+  content: "0" counter(solver-step);
+  color: var(--blue);
+  font-family: var(--font-mono);
+  font-weight: 850;
+}
+
+.life-method-steps strong {
+  color: var(--ink);
+}
+
+.life-constraint-facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 0 0 12px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+}
+
+.life-constraint-facts > div {
+  min-width: 0;
+  padding: 8px;
+}
+
+.life-constraint-facts > div + div {
+  border-left: 1px solid var(--line);
+}
+
+.life-constraint-facts dt,
+.life-constraint-facts dd {
+  overflow: hidden;
+  margin: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.life-constraint-facts dt {
+  color: var(--ink-faint);
+  font-size: 7px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.life-constraint-facts dd {
+  margin-top: 2px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+}
+
+.life-constraint-facts dd.is-sat {
+  color: var(--green);
+}
+
+body[data-scenario="reverse-life"] .rule-explainer ol {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 kbd {
   padding: 1px 5px;
   border: 1px solid rgba(255, 255, 255, 0.22);
@@ -1586,6 +2005,29 @@ body.presentation-mode {
   border-radius: 0;
 }
 
+.presentation-mode .life-lab {
+  min-height: 100vh;
+  margin: 0;
+  padding-top: 82px;
+  border: 0;
+  border-radius: 0;
+}
+
+.presentation-mode .life-toolbar {
+  padding-right: 30px;
+  padding-left: 30px;
+}
+
+.presentation-mode .life-stage {
+  padding: 22px 30px 130px;
+}
+
+.presentation-mode .life-status,
+.presentation-mode .life-forward-note,
+.presentation-mode .life-reverse-controls {
+  display: none;
+}
+
 .presentation-mode .canvas-topline {
   top: 88px;
   left: 30px;
@@ -1720,6 +2162,14 @@ body.presentation-mode {
   .parameter-deck {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .life-toolbar {
+    grid-template-columns: auto minmax(145px, 1fr) auto;
+  }
+
+  .life-pattern-copy {
+    display: none;
+  }
 }
 
 @media (max-width: 920px) {
@@ -1832,6 +2282,72 @@ body.presentation-mode {
     height: 54vh;
     margin: 0 8px;
     border-radius: 12px;
+  }
+
+  .life-lab {
+    min-height: 0;
+    margin: 0 8px;
+    border-radius: 12px;
+  }
+
+  .life-toolbar {
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    padding: 9px;
+  }
+
+  .life-mode-switch,
+  .life-pattern-picker {
+    width: 100%;
+  }
+
+  .life-mode-switch button {
+    flex: 1;
+  }
+
+  .life-clear {
+    min-height: 32px;
+  }
+
+  .life-stage {
+    grid-template-columns: 1fr;
+    padding: 9px;
+  }
+
+  .life-rule-arrow {
+    grid-template-columns: auto auto;
+    justify-content: center;
+    align-items: center;
+    gap: 7px;
+  }
+
+  .life-rule-arrow strong {
+    transform: rotate(90deg);
+  }
+
+  .life-board-panel canvas {
+    max-height: 235px;
+  }
+
+  .life-reverse-controls {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    padding: 0 9px 8px;
+  }
+
+  .life-reverse-controls label {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+
+  .life-reverse-controls #life-verify-button {
+    grid-column: 1 / -1;
+  }
+
+  .life-forward-note,
+  .life-status {
+    margin-right: 9px;
+    margin-left: 9px;
   }
 
   .layout-editor {

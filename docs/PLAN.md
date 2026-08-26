@@ -354,6 +354,16 @@ The capstone is a deliberately limited “medieval-like” generative model, not
 
 Useful comparisons include the same rules with different seeds, an early versus late wall, moving a market or gate, a hard frontage requirement versus a preference, an emergent network versus a planned grid, and two different processes that create similar-looking plans.
 
+### Stage 5 — Solver laboratory (experimental branch)
+
+Conway's Life provides a small visual introduction to constraint solving before a
+solver is applied to spatial allocation. The first slice runs well-known patterns
+forward, fixes a desired next generation, and asks a SAT solver for predecessor states.
+Every reported predecessor is replayed through the ordinary B3/S23 rule as a visible
+proof. Sparse optimization and alternate answers expose the difference between finding
+a feasible state and choosing among many feasible states. See
+[the reverse-Life experiment note](REVERSE_LIFE.md) for the encoding and boundaries.
+
 ## 6. Engine evolution without a rewrite
 
 The canonical state will grow into these independent stores:

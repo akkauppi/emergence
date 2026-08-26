@@ -31,16 +31,20 @@ desire paths, public streets, and territory.
   narrow, and actual overload makes an aligned route locally less attractive. Variable
   width and congestion marks make the resulting hierarchy visible without imposing a
   grid or changing Territory's defaults.
+- **Conway's Life · run forward, solve backward** — paint familiar Life patterns,
+  evolve them under B3/S23, or ask a SAT solver for one of their possible predecessor
+  states and verify the answer with an ordinary forward step.
 
 Useful controls include pause, single-step, same-seed reset, population, tempo,
 relationship overlays, delayed sensing, and drag-to-perturb interventions.
 
 ## Quick start
 
-The app is a dependency-free static site. Node.js 20 or newer is the only tool
-needed.
+The deployed app is a static site. Building it requires Node.js 20 or newer and the
+locked npm dependencies.
 
 ```bash
+npm ci
 npm run dev       # open http://127.0.0.1:4173
 npm test          # run deterministic simulation tests
 npm run build     # write the deployable site to dist/
@@ -89,6 +93,10 @@ See [the product and implementation plan](docs/PLAN.md) for the teaching sequenc
 architecture. The [urban-growth research notes](docs/RESEARCH.md) connect Territory's
 modeling decisions to papers and reference implementations, record the deterministic
 A/B comparison, and separate planned extensions from standalone comparison demos.
+The [reverse-Life experiment note](docs/REVERSE_LIFE.md) documents the SAT encoding,
+finite-board assumptions, generated solver assets, and reproducible entry points.
+Bundled dependency licenses are recorded in
+[third-party notices](THIRD_PARTY_NOTICES.md).
 
 ## Contributing
 

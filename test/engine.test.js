@@ -20,7 +20,7 @@ function createEngine(scenarioId, overrides = {}) {
 }
 
 test("all bundled behavior examples compile", () => {
-  for (const scenario of scenarios) {
+  for (const scenario of scenarios.filter((candidate) => candidate.kind !== "life")) {
     assert.equal(typeof compileBehavior(scenario.source), "function", scenario.id);
   }
 });

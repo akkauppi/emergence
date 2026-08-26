@@ -1,4 +1,6 @@
 dist/
 node_modules/
+src/life/reverse-life.worker.bundle.js
+src/life/minisat_static.wasm
 *.log
 .DS_Store

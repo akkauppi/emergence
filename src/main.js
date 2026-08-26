@@ -6,12 +6,17 @@ import {
   normalizeLayoutRect,
   placementConflict,
 } from "./layout-tools.js";
+import { LifeLab } from "./life/life-lab.js";
 import { copyParameters, getScenario, scenarios } from "./scenarios.js";
 
 const element = (id) => document.getElementById(id);
 const ui = {
   scenario: element("scenario-select"),
+  playgroundTitle: element("playground-title"),
+  ruleLoopLabel: element("rule-loop-label"),
+  detailTab: element("workspace-detail-tab"),
   seed: element("seed-value"),
+  seedControl: element("seed-control"),
   newSeed: element("new-seed-button"),
   tick: element("tick-value"),
   canvasStatus: element("canvas-status"),
@@ -27,6 +32,34 @@ const ui = {
   legendCItem: element("legend-c-item"),
   legendCLabel: element("legend-c-label"),
   canvasDescription: element("canvas-description"),
+  canvasShell: element("canvas-shell"),
+  lifeRoot: element("life-lab"),
+  lifeStage: element("life-stage"),
+  lifePatternSelect: element("life-pattern-select"),
+  lifeModeButtons: [...document.querySelectorAll("[data-life-mode]")],
+  lifePatternName: element("life-pattern-name"),
+  lifePatternFact: element("life-pattern-fact"),
+  lifeClear: element("life-clear-button"),
+  lifeLeftCanvas: element("life-left-canvas"),
+  lifeLeftKicker: element("life-left-kicker"),
+  lifeLeftTitle: element("life-left-title"),
+  lifeLeftCount: element("life-left-count"),
+  lifeRightCanvas: element("life-right-canvas"),
+  lifeRightKicker: element("life-right-kicker"),
+  lifeRightTitle: element("life-right-title"),
+  lifeRightCount: element("life-right-count"),
+  lifeArrowLabel: element("life-arrow-label"),
+  lifeReverseControls: element("life-reverse-controls"),
+  lifeObjective: element("life-objective-select"),
+  lifeSolve: element("life-solve-button"),
+  lifeAnother: element("life-another-button"),
+  lifeVerify: element("life-verify-button"),
+  lifeForwardNote: element("life-forward-note"),
+  lifeStatus: element("life-status"),
+  lifeMethod: element("life-method"),
+  lifeConstraintVariables: element("life-constraint-variables"),
+  lifeConstraintClauses: element("life-constraint-clauses"),
+  lifeConstraintResult: element("life-constraint-result"),
   layoutEditor: element("layout-editor"),
   layoutStatus: element("layout-status"),
   layoutTools: [...document.querySelectorAll("[data-layout-tool]")],
@@ -55,7 +88,9 @@ const ui = {
   step: element("step-button"),
   reset: element("reset-button"),
   tempo: element("speed-select"),
+  tempoControl: element("tempo-control"),
   population: element("population-input"),
+  populationControl: element("population-control"),
   populationValue: element("population-value"),
   populationLabel: element("population-label"),
   trailsControl: element("trails-control"),
@@ -65,6 +100,7 @@ const ui = {
   landControl: element("land-control"),
   land: element("land-toggle"),
   parameters: element("parameter-controls"),
+  metricsStrip: element("metrics-strip"),
   spread: element("spread-value"),
   primaryMetricLabel: element("primary-metric-label"),
   primaryMetricDetail: element("primary-metric-detail"),
@@ -88,6 +124,8 @@ const ui = {
   lineNumbers: element("line-numbers"),
   codeState: element("code-state"),
   diagnostics: element("diagnostics"),
+  editorSection: element("editor-section"),
+  apiReference: element("api-reference"),
   apply: element("apply-button"),
   restore: element("restore-button"),
   presentation: element("presentation-button"),
@@ -96,7 +134,7 @@ const ui = {
 };
 
 const state = {
-  scenario: getScenario("between"),
+  scenario: getScenario(new URLSearchParams(window.location.search).get("scenario") || "between"),
   seed: 2026,
   population: 72,
   params: {},
@@ -136,6 +174,34 @@ const renderer = new CanvasRenderer(element("world-canvas"), {
   onLandSelect: handleLandSelection,
 });
 
+const lifeLab = new LifeLab({
+  stage: ui.lifeStage,
+  patternSelect: ui.lifePatternSelect,
+  modeButtons: ui.lifeModeButtons,
+  patternName: ui.lifePatternName,
+  patternFact: ui.lifePatternFact,
+  clear: ui.lifeClear,
+  leftCanvas: ui.lifeLeftCanvas,
+  leftKicker: ui.lifeLeftKicker,
+  leftTitle: ui.lifeLeftTitle,
+  leftCount: ui.lifeLeftCount,
+  rightCanvas: ui.lifeRightCanvas,
+  rightKicker: ui.lifeRightKicker,
+  rightTitle: ui.lifeRightTitle,
+  rightCount: ui.lifeRightCount,
+  arrowLabel: ui.lifeArrowLabel,
+  reverseControls: ui.lifeReverseControls,
+  objective: ui.lifeObjective,
+  solve: ui.lifeSolve,
+  another: ui.lifeAnother,
+  verify: ui.lifeVerify,
+  forwardNote: ui.lifeForwardNote,
+  status: ui.lifeStatus,
+  constraintVariables: ui.lifeConstraintVariables,
+  constraintClauses: ui.lifeConstraintClauses,
+  constraintResult: ui.lifeConstraintResult,
+}, { onUpdate: renderLifeState });
+
 for (const scenario of scenarios) {
   const option = document.createElement("option");
   option.value = scenario.id;
@@ -151,6 +217,10 @@ const DEFAULT_GATE_RADIUS = 34;
 const MIN_GATE_RADIUS = 18;
 const MAX_GATE_RADIUS = 70;
 const MINIMUM_GATE_COUNT = 2;
+
+function isLifeScenario(scenario = state.scenario) {
+  return scenario?.kind === "life";
+}
 
 function cloneEnvironment(environment) {
   if (!environment) return null;
@@ -948,12 +1018,84 @@ function drawMetricHistory() {
   );
 }
 
+function renderLifeState(snapshot) {
+  if (!snapshot.active || !isLifeScenario()) return;
+  state.running = snapshot.running;
+  ui.tick.textContent = String(snapshot.generation);
+  if (snapshot.mode === "forward") {
+    ui.primaryMetricLabel.textContent = "Live cells";
+    ui.primaryMetricDetail.textContent = "current generation";
+    ui.secondaryMetricLabel.textContent = "Births next";
+    ui.secondaryMetricDetail.textContent = "dead cells with three neighbors";
+    ui.metricLabel.textContent = "Deaths next";
+    ui.matchLabel.textContent = "under- or over-population";
+    ui.trendLabel.textContent = "Population history";
+    ui.spread.textContent = String(snapshot.population);
+    ui.nearest.textContent = String(snapshot.births);
+    ui.match.textContent = String(snapshot.deaths);
+    state.metricHistory = snapshot.populationHistory;
+    drawMetricHistory();
+  } else {
+    const stats = snapshot.solverStats;
+    ui.primaryMetricLabel.textContent = "Target cells";
+    ui.primaryMetricDetail.textContent = "fixed successor generation";
+    ui.secondaryMetricLabel.textContent = "Predecessor cells";
+    ui.secondaryMetricDetail.textContent = "candidate assigned by MiniSat";
+    ui.metricLabel.textContent = "Solver result";
+    ui.spread.textContent = String(snapshot.targetPopulation);
+    ui.nearest.textContent = snapshot.predecessorPopulation === null
+      ? "—"
+      : String(snapshot.predecessorPopulation);
+    ui.match.textContent = snapshot.solving ? "…" : stats ? (snapshot.hasPredecessor ? "SAT" : "UNSAT") : "—";
+    ui.matchLabel.textContent = stats
+      ? `${stats.totalMs < 1 ? stats.totalMs.toFixed(1) : Math.round(stats.totalMs)} ms · ${
+        snapshot.hasPredecessor ? "forward verified" : "no model"
+      }`
+      : "search has not run";
+    ui.trendLabel.textContent = stats
+      ? `${stats.clauses.toLocaleString()} CNF clauses`
+      : "CNF generated on solve";
+    ui.metricLine.setAttribute("points", "");
+    ui.metricChart.setAttribute(
+      "aria-label",
+      stats
+        ? `${stats.clauses} clauses and ${stats.satVariables} SAT variables in the last reverse-Life search.`
+        : "No reverse-Life search has run.",
+    );
+  }
+  updateRunningUi();
+}
+
 function formatRuntimeError(error = {}) {
   const location = Number.isInteger(error.agentId) ? `Agent ${error.agentId}, tick ${error.tick}: ` : `Tick ${error.tick ?? 0}: `;
   return `${location}${error.message || "The behavior failed."}`;
 }
 
 function updateRunningUi() {
+  if (isLifeScenario()) {
+    const reverse = lifeLab.mode === "reverse";
+    const busy = lifeLab.solving;
+    ui.playLabel.textContent = reverse ? (busy ? "Solving…" : "Solve reverse") : state.running ? "Pause" : "Run";
+    ui.playIcon.textContent = reverse ? "←" : state.running ? "Ⅱ" : "▶";
+    ui.play.disabled = busy;
+    ui.play.setAttribute("aria-pressed", String(!reverse && state.running));
+    ui.step.disabled = busy;
+    ui.step.textContent = reverse ? "≠" : "›|";
+    ui.step.setAttribute("aria-label", reverse ? "Find another predecessor" : "Advance one generation");
+    ui.step.title = reverse ? "Find another predecessor" : "Advance one generation";
+    ui.reset.title = reverse ? "Restore the selected target" : "Restore the selected object";
+    ui.reset.setAttribute("aria-label", ui.reset.title);
+    ui.tempoControl.hidden = reverse;
+    return;
+  }
+  ui.play.disabled = false;
+  ui.step.disabled = false;
+  ui.step.textContent = "›|";
+  ui.step.setAttribute("aria-label", "Advance one step");
+  ui.step.title = "Advance one step";
+  ui.reset.title = "Reset with the same seed";
+  ui.reset.setAttribute("aria-label", "Reset simulation");
+  ui.tempoControl.hidden = false;
   ui.playLabel.textContent = state.running ? "Pause" : "Run";
   ui.playIcon.textContent = state.running ? "Ⅱ" : "▶";
   ui.play.setAttribute("aria-pressed", String(state.running));
@@ -1152,6 +1294,7 @@ function formatParameter(value, definition = {}) {
 }
 
 function loadScenario(scenario, { preserveSeed = true } = {}) {
+  lifeLab.deactivate();
   state.scenario = scenario;
   document.body.dataset.scenario = scenario.id;
   state.environment = cloneEnvironment(scenario.environment);
@@ -1171,6 +1314,10 @@ function loadScenario(scenario, { preserveSeed = true } = {}) {
   clearInterventionState();
 
   ui.scenario.value = scenario.id;
+  const life = isLifeScenario(scenario);
+  ui.playgroundTitle.textContent = life ? "One rule, two directions" : "Observe the whole, inspect a rule";
+  ui.ruleLoopLabel.textContent = life ? "Every cell repeats" : "Every person repeats";
+  ui.detailTab.textContent = life ? "Method" : "Code";
   ui.labStage.textContent = scenario.stage.label;
   ui.lessonNumber.textContent = scenario.stage.number;
   ui.lessonKicker.textContent = scenario.kicker;
@@ -1203,12 +1350,47 @@ function loadScenario(scenario, { preserveSeed = true } = {}) {
   ui.legendALabel.textContent = hasLand ? "reserved" : hasJourneys ? "destination" : "person A";
   ui.legendBLabel.textContent = hasLand ? "claimed" : hasJourneys ? "footfall" : "person B";
   ui.legendCLabel.textContent = hasLand ? "road / plot conflict" : "conflict";
-  ui.territoryInspector.hidden = !hasLand;
-  ui.trailsControl.hidden = hasLand;
-  ui.relationsControl.hidden = hasLand;
-  ui.landControl.hidden = !hasLand;
+  ui.canvasShell.hidden = life;
+  ui.lifeRoot.hidden = !life;
+  ui.seedControl.hidden = life;
+  ui.populationControl.hidden = life;
+  ui.territoryInspector.hidden = life || !hasLand;
+  ui.trailsControl.hidden = life || hasLand;
+  ui.relationsControl.hidden = life || hasLand;
+  ui.landControl.hidden = life || !hasLand;
+  ui.parameters.hidden = life;
+  ui.editorSection.hidden = life;
+  ui.apiReference.hidden = life;
+  ui.lifeMethod.hidden = !life;
   ui.populationLabel.textContent = hasLand ? "Claimants" : "People";
   ui.editor.value = scenario.source;
+  if (life) {
+    state.worker?.terminate();
+    state.worker = null;
+    state.workerGeneration += 1;
+    state.pendingPing = null;
+    state.frame = null;
+    state.running = false;
+    ui.editor.value = "";
+    updateLineNumbers();
+    renderParameterControls();
+    updateLayoutUi();
+    hideDiagnostic();
+    lifeLab.setTempo(Number(ui.tempo.value));
+    const query = new URLSearchParams(window.location.search);
+    const initialLifeMode = query.get("direction") === "reverse" ? "reverse" : "forward";
+    if (["any", "sparse"].includes(query.get("objective"))) {
+      ui.lifeObjective.value = query.get("objective");
+    }
+    lifeLab.setMode(initialLifeMode);
+    lifeLab.reset();
+    lifeLab.activate();
+    if (initialLifeMode === "reverse" && query.get("solve") === "1") {
+      requestAnimationFrame(() => lifeLab.solveReverse({ another: false }));
+    }
+    updateRunningUi();
+    return;
+  }
   renderer.setScenario(scenario.relationMode, state.params);
   renderer.setSelectedLand?.(null);
   if (renderer.setTenureVisible) renderer.setTenureVisible(ui.land.checked);
@@ -1225,6 +1407,10 @@ function loadScenario(scenario, { preserveSeed = true } = {}) {
 }
 
 function togglePlayback() {
+  if (isLifeScenario()) {
+    lifeLab.togglePlayback();
+    return;
+  }
   if (state.running) postToCurrentWorld({ type: "pause" });
   else postToCurrentWorld({ type: "play" });
 }
@@ -1297,8 +1483,15 @@ function clearInterventionState() {
 }
 
 ui.play.addEventListener("click", togglePlayback);
-ui.step.addEventListener("click", () => postToCurrentWorld({ type: "step", count: 1 }));
+ui.step.addEventListener("click", () => {
+  if (isLifeScenario()) lifeLab.step();
+  else postToCurrentWorld({ type: "step", count: 1 });
+});
 ui.reset.addEventListener("click", () => {
+  if (isLifeScenario()) {
+    lifeLab.reset();
+    return;
+  }
   hideDiagnostic();
   clearInterventionState();
   postWorldMutation({
@@ -1320,7 +1513,10 @@ ui.newSeed.addEventListener("click", () => {
     environment: cloneEnvironment(state.environment),
   });
 });
-ui.tempo.addEventListener("change", () => postToCurrentWorld({ type: "setTempo", tempo: Number(ui.tempo.value) }));
+ui.tempo.addEventListener("change", () => {
+  if (isLifeScenario()) lifeLab.setTempo(Number(ui.tempo.value));
+  else postToCurrentWorld({ type: "setTempo", tempo: Number(ui.tempo.value) });
+});
 ui.population.addEventListener("input", () => {
   state.population = Number(ui.population.value);
   ui.populationValue.textContent = String(state.population);
@@ -1384,7 +1580,10 @@ ui.presentation.addEventListener("click", () => {
   const enabled = document.body.classList.toggle("presentation-mode");
   if (enabled) setLayoutTool("inspect");
   ui.presentation.innerHTML = enabled ? "<span aria-hidden=\"true\">×</span> Exit" : "<span aria-hidden=\"true\">↗</span> Present";
-  window.setTimeout(() => renderer.draw(), 30);
+  window.setTimeout(() => {
+    if (isLifeScenario()) lifeLab.draw();
+    else renderer.draw();
+  }, 30);
 });
 
 for (const tab of document.querySelectorAll(".mobile-tab")) {
@@ -1393,7 +1592,12 @@ for (const tab of document.querySelectorAll(".mobile-tab")) {
     document.querySelectorAll(".mobile-tab").forEach((candidate) => {
       candidate.classList.toggle("is-active", candidate === tab);
     });
-    if (tab.dataset.tab === "playground") window.setTimeout(() => renderer.draw(), 20);
+    if (tab.dataset.tab === "playground") {
+      window.setTimeout(() => {
+        if (isLifeScenario()) lifeLab.draw();
+        else renderer.draw();
+      }, 20);
+    }
   });
 }
 
@@ -1406,7 +1610,7 @@ document.addEventListener("keydown", (event) => {
 
   if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
     event.preventDefault();
-    if (ui.editor.value !== state.appliedSource) applySource();
+    if (!isLifeScenario() && ui.editor.value !== state.appliedSource) applySource();
     return;
   }
 
@@ -1418,7 +1622,7 @@ document.addEventListener("keydown", (event) => {
 });
 
 window.setInterval(() => {
-  if (document.visibilityState !== "visible" || state.recovering) return;
+  if (isLifeScenario() || !state.worker || document.visibilityState !== "visible" || state.recovering) return;
   const now = performance.now();
   if (state.pendingPing && now - state.pendingPing.sentAt > 1_800) {
     state.recovering = true;
@@ -1437,7 +1641,7 @@ window.setInterval(() => {
 
 document.addEventListener("visibilitychange", () => {
   state.pendingPing = null;
-  if (document.visibilityState === "visible") {
+  if (!isLifeScenario() && state.worker && document.visibilityState === "visible") {
     const nonce = `${state.workerGeneration}:${performance.now()}`;
     state.pendingPing = { nonce, sentAt: performance.now() };
     post({ type: "ping", nonce });
